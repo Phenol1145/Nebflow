@@ -8,7 +8,7 @@ import io.circe.syntax.*
 object ChatCommand extends CliCommand:
   def name = "chat"
   def description = "Interactive or single-shot chat"
-  def subcommands = List(ChatSend)
+  def subcommands = List(ChatSend, ChatRepl)
 
   def examples = List(
     "nebflow chat \"what does this project do?\"",
@@ -94,7 +94,34 @@ object ChatCommand extends CliCommand:
   //   REPL is not wired in this batch (it has never been reachable, so its
   //   interactive path has no runtime evidence) — the previous message
   //   ("REPL mode should be invoked as 'nebflow chat' without subcommands")
-  //   was self-contradictory: bare `nebflow chat` did not enter REPL either.
+  //   was self-contradictory: bare `nebflow chat` did not enter REPL either。
+  //
+  // 2026-09-28 裁定（ORCH5-R4）：**上述整删已回退**——上条裁定的"零引用 ⇒ 不涉活路径"推论
+  // 遗漏了**结构性耦合**：`ChatRepl` 在 `subcommands` 表内的存在改变的是**表长**，而
+  // `CliRouter.dispatchCommand`（CliRouter.scala:74-88）按表长分支——`single :: Nil` 走
+  // 默认子命令执行、多元素走"needs a subcommand"报错。删后 `chat` 表长 2→1，裸
+  // `nebflow chat` 从报错（"'chat' needs a subcommand — one of: send, repl"）变为**直接执行
+  // ChatSend 空参** ⇒ 行为回归。证据链：全量回归 `nebflow.cli.CliRouterSpec` 失败
+  // （V16，CliRouterSpec.scala:204，隔离复跑仍失败；该 spec 是白名单头注点名的**回归哨兵**）
+  // + `CliRouter.scala:72` 注释原文自述 V16 是"刻意修好"的行为。故此处**逐字恢复**原
+  // `ChatRepl` 与其 subcommands 表位，`chat` 裸调用行为与 B5 前逐字节一致。
+  // 后续可选（留用户拍板，不属本战役）：若要真正退役该腿，须先在 CliRouter 侧给
+  // `CliCommand` 加"必须显式子命令"标志位（裸 `chat` 仍报错、但列表只列 `send`），
+  // 再删 `ChatRepl`——那是行为改动，需单独授权。
+  private object ChatRepl extends CliSubcommand:
+    def name = "repl"
+    def description = "REPL mode (not implemented)"
+
+    def params = List(
+      CliParam("session", Some('s'), "Session ID to use", required = false)
+    )
+
+    def run(ctx: CliContext): IO[CliResult] =
+      // REPL is not wired in this batch (it has never been reachable, so its
+      // interactive path has no runtime evidence) — the previous message
+      // ("REPL mode should be invoked as 'nebflow chat' without subcommands")
+      // was self-contradictory: bare `nebflow chat` did not enter REPL either.
+      IO.pure(CliResult.Error("REPL mode is not implemented — use 'nebflow chat send \"<message>\"'"))
 
 end ChatCommand
 
