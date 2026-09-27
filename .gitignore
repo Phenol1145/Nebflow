@@ -110,3 +110,6 @@ replay_pid*
 # editor state, never source.
 *.swp
 *~
+
+# ZCode 工作流运行器生成的排除清单(harness-owned,不入库)
+.zcodeignore
