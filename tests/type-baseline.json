@@ -21,9 +21,11 @@
       "TS2322": 1
     },
     "src/main/resources/web/js/chat.js": {
-      "TS2345": 2,
-      "TS1016": 1,
       "TS2525": 3
+    },
+    "src/main/resources/web/js/chat/durationBadges.js": {
+      "TS2345": 2,
+      "TS1016": 1
     },
     "src/main/resources/web/js/chatQueue.js": {
       "TS2739": 1,
