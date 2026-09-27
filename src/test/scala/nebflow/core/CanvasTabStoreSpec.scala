@@ -3,6 +3,7 @@ package nebflow.core
 import cats.effect.IO
 import io.circe.{Json, parser}
 import munit.CatsEffectSuite
+import nebflow.gateway.{CanvasTabStore, CanvasTabs}
 
 import scala.concurrent.duration.*
 

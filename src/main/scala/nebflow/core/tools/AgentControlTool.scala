@@ -766,6 +766,13 @@ When to use:
         // SessionChildCascade 无 supervisor 降级腿的「child Stop → 注册表移除」相反。
         // 本批经逐行对照未发现可推翻上述四差异的证据。处置 = 登记为后续批次候选
         // （B5 或用户拍板的独立批次）；台账原文另见 agent/LifecycleEnds.scala 对象 doc。
+        // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项末批收敛态
+        // = **明确建议**（`后续批次候选` 登记即最终建议，不再悬空）：处置方案 = core 侧新增
+        // 窄 Face 端口面 + 启动注册点（先例 `DelegateBudgetPort`，core/AgentRuntimePort.scala
+        // :201-222）后把本降级腿改指共享体；成本 ≈ 窄端口 + 注册点（结构新增，非收敛）；
+        // 不并入本批理由 = ① 跨包结构性新增接口 ② 未注册路径失败面须逐点等价 ③ 本腿四处
+        // 真差异不满足「逐字同形」门槛（上条已列）。落点：`agent/LifecycleEnds.scala`
+        // ORCH5 台账⑤。
         // 并置原注（下方「降级路径（spec §3.2 兜底）」两行）逐字保留，未改一字。
         // 降级路径（spec §3.2 兜底）：Ephemeral（bridge death-watch 兜底回收）或
         // 无 supervisor 记录的旧记录——直接 Stop + 自补通知 + registry 移除。

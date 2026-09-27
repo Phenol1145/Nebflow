@@ -1373,7 +1373,7 @@ class WebSocketRoutes(
       val msgType = parsed.hcursor.downField("type").as[String].getOrElse("")
       for
         _ <- sharedResources.lastWsActivity.set(System.currentTimeMillis())
-        _ <- nebflow.core.UsageTracker.record("ws_message", sessionIdForTracking)
+        _ <- nebflow.core.usage.UsageTracker.record("ws_message", sessionIdForTracking)
         _ <- WsDispatch.handlers.get(msgType) match
           case Some(handle) =>
             handle(wsDispatchContext, text, wsSend, watchSession)

@@ -35,58 +35,14 @@ object Repl:
 
   private val MAX_IMAGE_SIZE = 5 * 1024 * 1024 // 5MB
 
-  def replaceMediaPaths(input: String): String =
-    val matches = MEDIA_REGEX.findAllMatchIn(input).toList
-    if matches.isEmpty then input
-    else
-      var result = ""
-      var lastEnd = 0
-      matches.zipWithIndex.foreach { case (m, i) =>
-        val path = m.group(1)
-        val fullMatch = m.matched
-        val pathIndexInMatch = fullMatch.indexOf(path)
-        val pathStart = m.start + pathIndexInMatch
-        result += input.substring(lastEnd, pathStart)
-        result += s"[media ${i + 1}]"
-        lastEnd = pathStart + path.length
-      }
-      result + input.substring(lastEnd)
-
-  end replaceMediaPaths
-
-  def buildUserMessage(input: String): IO[Message] = IO.blocking { // public for AgentActor
-    val matches = MEDIA_REGEX.findAllMatchIn(input).toList
-    if matches.isEmpty then Message(MessageRole.User, Left(input))
-    else
-      val imageBlocks = scala.collection.mutable.ListBuffer.empty[ContentBlock.Image]
-      val mediaItems = scala.collection.mutable.ListBuffer.empty[String]
-
-      matches.foreach { m =>
-        val filePathStr = m.group(1).replaceFirst("^~", sys.props.getOrElse("user.home", "~"))
-        val ext = filePathStr.split("\\.").lastOption.map(_.toLowerCase).getOrElse("")
-        val filePath = Paths.get(filePathStr)
-
-        if !Files.exists(filePath) || !Files.isRegularFile(filePath) then mediaItems += s"Not a file: $filePathStr"
-        else if VIDEO_EXTENSIONS.exists(filePathStr.toLowerCase.endsWith) then
-          val sizeKb = (Files.size(filePath) / 1024).toInt
-          mediaItems += s"Video: $filePathStr (${sizeKb}KB)"
-        else if Files.size(filePath) > MAX_IMAGE_SIZE then
-          val sizeMb = Files.size(filePath).toDouble / 1024 / 1024
-          mediaItems += s"Image too large: $filePathStr (${sizeMb}%.1fMB > 5MB)"
-        else
-          val mediaType = MIME_MAP.getOrElse(ext, "application/octet-stream")
-          val bytes = Files.readAllBytes(filePath)
-          val base64 = java.util.Base64.getEncoder.encodeToString(bytes)
-          val sizeKb = (bytes.length / 1024).toInt
-          mediaItems += s"Image: $filePathStr (${sizeKb}KB, $mediaType)"
-          imageBlocks += ContentBlock.Image(base64, mediaType)
-      }
-
-      val displayInput = replaceMediaPaths(input)
-      val blocks = ContentBlock.Text(displayInput) :: imageBlocks.toList
-      Message(MessageRole.User, Right(blocks))
-    end if
-  }
+  // 2026-09-28 裁定（ORCH5-P3 / ORCH5-R1：死码清册 C3 条）——本处原 `replaceMediaPaths`
+  // 与 `buildUserMessage` 两成员已**整删**，零引用实证（全仓 `git grep -n` 含测试树/
+  // 字符串/反射名）：`buildUserMessage` 仅命中本文件定义行；`replaceMediaPaths` 唯一
+  // 调用点 = `buildUserMessage` 体内（两成员同删，调用面随之消失）。删除后 `Repl`
+  // 仅剩活成员 `loadSystemPrompt`（消费点 = `agent/AgentSessionExecution.scala:2235`），
+  // 非空壳；两成员上方的 `// public for AgentActor` 行内注释随成员同删（非带日期
+  // 注释 ⇒ 无迁置义务）。私有 vals（`IMAGE_EXTENSIONS` … `MAX_IMAGE_SIZE`）按同裁定
+  // 「文件其余逐字不动」原样留置（不引 -Wunused，零新警告）。
 
   def loadSystemPrompt(): String = // public for AgentActor
     val path = PathUtil.dataRoot / "agents" / RootAgentIdentity.Name / "system.md"

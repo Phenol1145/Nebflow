@@ -1166,7 +1166,7 @@ object ShellSession:
       val progFilesX86 = sys.env.getOrElse("ProgramFiles(x86)", "C:\\Program Files (x86)")
       val localAppData = sys.env.getOrElse("LOCALAPPDATA", "")
       val candidates =
-        nebflow.core.InstallLayout.bundledBash.toList ++
+        nebflow.core.boot.InstallLayout.bundledBash.toList ++
           List(
             s"$progFiles\\Git\\bin\\bash.exe",
             s"$progFilesX86\\Git\\bin\\bash.exe"
@@ -1178,7 +1178,7 @@ object ShellSession:
    * invoked with -l + MSYSTEM=MINGW64 (see buildProcessBuilder).
    */
   lazy val isBundledBash: Boolean =
-    nebflow.core.InstallLayout.bundledBash.contains(resolvedBashPath)
+    nebflow.core.boot.InstallLayout.bundledBash.contains(resolvedBashPath)
 
   // Best-effort cleanup of all sessions on JVM exit
   sys.addShutdownHook {

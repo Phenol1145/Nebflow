@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.shared
 
 import java.nio.file.*
 import java.nio.file.attribute.*
@@ -56,6 +56,16 @@ import scala.jdk.CollectionConverters.*
  * [[WindowsAcl]], so the whole defect is reproducible — and its repair
  * verifiable — on a host without ACLs. The POSIX branch is untouched (one
  * call, same exception semantics).
+ *
+ * ── 2026-09-28 裁定（ORCH5-P2 / ORCH5-R1，跨包迁移配套改动；单列申报）──────────
+ * 本文件由 `nebflow.core` 迁入 `nebflow.shared`（第五批 core 根域归位）。原
+ * `private[core]` 访问限定符在新址**不再解析**（编译 E139：no enclosing class or
+ * object is named 'core' —— 造 E139 的 7 处即下方 :110 / :125 / :176 / :210 /
+ * :577 / :589 / :634）。处置 = 按「同一作用域在新址的等价表达」逐处改写为
+ * `private[shared]`（**只改限定符**，方法体/签名/字面量零改）。可见性面实测零收窄：
+ * 这 7 个成员的全仓引用（主树 + 测试树 `git grep -n` 逐符号核）**全部在本文件内部**，
+ * 无任何外部消费者 ⇒ 改写不改变任何实际可达性。完整台账见
+ * `agent/LifecycleEnds.scala` ORCH5 台账⑥。
  */
 object CredentialFileAcl:
 
@@ -107,7 +117,7 @@ object CredentialFileAcl:
    * support must not silently fall back to POSIX permissions (a no-op on
    * Windows, which is the original Q2 defect).
    */
-  private[core] def aclView(path: Path): AclFileAttributeView =
+  private[shared] def aclView(path: Path): AclFileAttributeView =
     val view =
       Files.getFileAttributeView(path, classOf[AclFileAttributeView], LinkOption.NOFOLLOW_LINKS)
     if view == null then
@@ -122,7 +132,7 @@ object CredentialFileAcl:
    * inherited from the parent directory (profile dir, Everyone,
    * BUILTIN\Users) are not carried over.
    */
-  private[core] def installOwnerOnlyAce(view: AclFileAttributeView): Unit =
+  private[shared] def installOwnerOnlyAce(view: AclFileAttributeView): Unit =
     view.setAcl(java.util.List.of(ownerOnlyAce(view.getOwner)))
 
   /**
@@ -173,7 +183,7 @@ object CredentialFileAcl:
    * inheritance flags — it applies to this file only and cannot leak into
    * children.
    */
-  private[core] def ownerOnlyAce(owner: UserPrincipal): AclEntry =
+  private[shared] def ownerOnlyAce(owner: UserPrincipal): AclEntry =
     AclEntry
       .newBuilder()
       .setType(AclEntryType.ALLOW)
@@ -207,7 +217,7 @@ object CredentialFileAcl:
    * Both literals are pinned in `DeviceCredentialAclSpec` T4-R1, so this table
    * cannot drift away from the machine evidence unnoticed.
    */
-  private[core] val Win32Bit: Map[AclEntryPermission, Long] = Map(
+  private[shared] val Win32Bit: Map[AclEntryPermission, Long] = Map(
     AclEntryPermission.READ_DATA -> 0x000001L, // FILE_READ_DATA
     AclEntryPermission.WRITE_DATA -> 0x000002L, // FILE_WRITE_DATA
     AclEntryPermission.APPEND_DATA -> 0x000004L, // FILE_APPEND_DATA
@@ -574,7 +584,7 @@ object CredentialFileAcl:
    * so it cannot drift when lines move above it (the diagnosis must be
    * actionable on the failing machine, where the source is a checkout).
    */
-  private[core] def anchorHere: String =
+  private[shared] def anchorHere: String =
     new Throwable().getStackTrace.toList
       .dropWhile(_.getMethodName == "anchorHere")
       .find(_.getFileName == "CredentialFileAcl.scala")
@@ -586,7 +596,7 @@ object CredentialFileAcl:
    * message this module can see is a path or a JDK ACL complaint — never a
    * credential value.
    */
-  private[core] def describe(e: Throwable): String =
+  private[shared] def describe(e: Throwable): String =
     s"${e.getClass.getSimpleName}: ${Option(e.getMessage).getOrElse("")}"
 
   /**
@@ -631,7 +641,7 @@ object CredentialFileAcl:
    * without a POSIX view (Windows) throws, and the caller treats that as
    * "nothing to do here" (see [[restrictDirectory]]).
    */
-  private[core] def needsNarrowing(dir: Path): Boolean =
+  private[shared] def needsNarrowing(dir: Path): Boolean =
     val perms = Files.getPosixFilePermissions(dir)
     // Compare by ENUM CONSTANT, not by name string: `PosixFilePermission` is a
     // Java enum, so the only name accessor is `Enum.name()` — matching on

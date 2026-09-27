@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.gateway
 
 import cats.effect.IO
 import io.circe.syntax.given

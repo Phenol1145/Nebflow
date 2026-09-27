@@ -3,6 +3,7 @@ package nebflow.core
 import munit.CatsEffectSuite
 import nebflow.agent.ContextRefresher
 import nebflow.core.tools.AskUserQuestionTool
+import nebflow.shared.HeadlessMode
 
 /**
  * HeadlessMode touchpoint coverage (design doc "Headless 一次性执行入口"

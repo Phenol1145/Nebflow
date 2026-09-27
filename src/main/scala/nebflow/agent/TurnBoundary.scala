@@ -306,6 +306,13 @@ private[agent] object TurnBoundary:
    * owedCompletion 改 Option 覆盖形，None ⇒ exec 原样带过，语义不变）。
    * 本批仅 AgentProcessing recoverable-abort 腿接入（无站点专属注释冲突）；
    * AgentFinishTurn 三注入腿各自带站点级日期裁定注释 ⇒ ORCH1-R8 待下批。
+   *
+   * 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——上句 `待下批`
+   * 字样为历史遗留，本项末批收敛态 = **明确建议**：处置方案 = ORCH4 台账⑤ 方案 A
+   * （在本边界帧增设显式画像实参 carryDelivery / carryProject 等，逐站传入，把三注入腿
+   * 的组装收进本单点而字段省略逐站显式；成本 ≈ 组装函数签名 + 3 站点实参，零新依赖，
+   * 可行性：高）；不并入本批理由 = 三腿帧字节与统一形态不可证等价（ORCH2-P5「禁静默
+   * 统一」）+ 站点专属日期注释组随码铁律。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
    */
   private[agent] def withCarriedQueues(
     exec: ExecutionContext,

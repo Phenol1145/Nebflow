@@ -1,6 +1,7 @@
 package nebflow.core
 
 import munit.FunSuite
+import nebflow.core.hotrestart.AutoStartService
 
 class AutoStartServiceSpec extends FunSuite:
 

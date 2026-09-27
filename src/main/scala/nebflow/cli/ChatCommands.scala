@@ -8,7 +8,7 @@ import io.circe.syntax.*
 object ChatCommand extends CliCommand:
   def name = "chat"
   def description = "Interactive or single-shot chat"
-  def subcommands = List(ChatSend, ChatRepl)
+  def subcommands = List(ChatSend)
 
   def examples = List(
     "nebflow chat \"what does this project do?\"",
@@ -83,20 +83,18 @@ object ChatCommand extends CliCommand:
 
   end ChatSend
 
-  private object ChatRepl extends CliSubcommand:
-    def name = "repl"
-    def description = "REPL mode (not implemented)"
-
-    def params = List(
-      CliParam("session", Some('s'), "Session ID to use", required = false)
-    )
-
-    def run(ctx: CliContext): IO[CliResult] =
-      // REPL is not wired in this batch (it has never been reachable, so its
-      // interactive path has no runtime evidence) — the previous message
-      // ("REPL mode should be invoked as 'nebflow chat' without subcommands")
-      // was self-contradictory: bare `nebflow chat` did not enter REPL either.
-      IO.pure(CliResult.Error("REPL mode is not implemented — use 'nebflow chat send \"<message>\"'"))
+  // 2026-09-28 裁定（ORCH5-P3 / ORCH5-R1：死码清册 ③「chat repl 未实现腿」）——本处原
+  // `private object ChatRepl`（`name = "repl"`，run 恒返回未实现错误）已**整删**，
+  // 且 `subcommands` 表从 `List(ChatSend, ChatRepl)` 收窄为 `List(ChatSend)`。
+  // 零引用实证（全仓 `git grep -n` 含测试树/字符串字面量/反射式名/脚本/文档）：
+  // `ChatRepl` 仅命中本文件定义与 subcommands 表自身；无测试断言其存在
+  // （`CliRouterSpec` 只测 `sessionFrame` / `newSessionId`），README / CONTRIBUTING /
+  // scripts 零命中 ⇒ 该腿**从未可达**，删它属死码退役，不涉任何活路径。
+  // 原文迁置（成员内行内注释，逐字保留；非带日期注释，按裁定仍整段并置，不得随删消失）：
+  //   REPL is not wired in this batch (it has never been reachable, so its
+  //   interactive path has no runtime evidence) — the previous message
+  //   ("REPL mode should be invoked as 'nebflow chat' without subcommands")
+  //   was self-contradictory: bare `nebflow chat` did not enter REPL either.
 
 end ChatCommand
 

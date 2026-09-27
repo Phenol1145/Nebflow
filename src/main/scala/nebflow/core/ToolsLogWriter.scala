@@ -39,6 +39,14 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
  * Retention: aligned with the router logs — same shared constant
  * ([[LlmLogWriter.retentionDays]], currently 3), same once-per-day prune
  * cadence, reusing the tested date-prefix deletion scan.
+ *
+ * ── 2026-09-28 裁定（ORCH5-P2 / ORCH5-R1，A3 条：**留置 core 根**，不迁 shared）──
+ * 本文件与姊妹 [[LlmLogWriter]] **同址处置**（两者互引 + 共享消费面
+ * `agent/AgentSessionExecution` ⇒ 分开迁会留下「日志写入器散在两个包」的新疤）。
+ * 闭包面：自身出边 = {shared}（迁 shared 后为零出边，闭包纯净，方向合法）；但 A2 条
+ * 已裁姊妹留置（45 文件 209 处内联 FQN 的改写成本与末批「测试面最小改」取舍不成比例），
+ * 故本文件按同址原则一并留置。建议路径 = 先立「禁内联 FQN」lint 或独立小批，届时与
+ * 姊妹一并迁 shared。完整台账见 `agent/LifecycleEnds.scala` ORCH5 台账⑥。
  */
 object ToolsLogWriter:
 

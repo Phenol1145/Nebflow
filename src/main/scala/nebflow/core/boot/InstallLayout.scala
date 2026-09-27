@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.boot
 
 import java.io.File
 

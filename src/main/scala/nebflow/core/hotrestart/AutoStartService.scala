@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.hotrestart
 
 import cats.effect.IO
 import nebflow.shared.PathUtil

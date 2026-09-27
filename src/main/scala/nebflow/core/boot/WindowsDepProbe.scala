@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.boot
 
 import cats.effect.IO
 import nebflow.core.tools.{RgHelper, ShellSession}

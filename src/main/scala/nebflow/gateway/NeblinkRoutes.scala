@@ -849,7 +849,7 @@ private[gateway] object NeblinkRoutes:
                 nebflow.core.hotupdate.RemoteUpdateAction.runInstallScript(beta).flatMap {
                   case Right(msg) =>
                     logger.info("[neblink] Install succeeded, spawning restart helper and shutting down...") *>
-                      IO.blocking(nebflow.core.RestartHelper.spawnRestart()) *>
+                      IO.blocking(nebflow.core.hotrestart.RestartHelper.spawnRestart()) *>
                       IO.delay {
                         sharedResources.dispatcher.unsafeRunAndForget(
                           IO.sleep(1.second) *> IO(System.exit(0))

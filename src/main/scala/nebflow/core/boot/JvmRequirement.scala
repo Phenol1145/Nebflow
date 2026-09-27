@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.boot
 
 /**
  * JDK baseline gate — the gateway requires Java 21 or newer.

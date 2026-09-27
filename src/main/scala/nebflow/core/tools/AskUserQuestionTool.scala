@@ -5,7 +5,7 @@ import io.circe.JsonObject
 import io.circe.syntax.*
 import nebflow.actor.*
 import nebflow.core.*
-import nebflow.shared.*
+import nebflow.shared.{HeadlessMode, *}
 
 import scala.concurrent.duration.*
 

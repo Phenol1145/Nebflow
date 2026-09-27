@@ -344,6 +344,11 @@ class SubAgentInboxMirrorSpec extends FunSuite:
     // AgentFinishTurn turn-末 imm 腿，后两者 = ORCH1-R3 待下批靶点），聚合并入
     // TurnBoundary.scala 后合计 = 9（8 处调用 + 1 处 def）——发射协议站点计数
     // 语义保持：帧构造 def 仍全仓唯一（ORCH1-R6），禁新增第二发射面。
+    // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——上句
+    // `ORCH1-R3 待下批靶点` 为历史遗留，本项末批收敛态 = **明确建议**：方案 A
+    // （TurnBoundary 边界帧显式画像实参 carryDelivery/carryProject，逐站传入；成本
+    // ≈ 组装函数签名 + 3 站点实参，零新依赖）留独立批次，理由 = 帧字节不可证等价
+    // （ORCH2-P5「禁静默统一」）。本断言面（站点计数 9 语义）**零改动**。
     assertEquals(
       "emitInjectedUserEvent\\(".r.findAllMatchIn(agentActor).size +
         "emitInjectedUserEvent\\(".r.findAllMatchIn(agentFinishTurn).size +

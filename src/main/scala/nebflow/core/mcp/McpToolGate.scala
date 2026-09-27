@@ -1,7 +1,8 @@
-package nebflow.core
+package nebflow.core.mcp
 
 import io.circe.syntax.*
 import io.circe.{Json, JsonObject}
+import nebflow.core.SafetyMode
 
 import java.util.concurrent.ConcurrentHashMap
 

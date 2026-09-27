@@ -139,8 +139,12 @@ object AgentActor extends AgentCore with AgentSession:
     case FreezeReason.RestartRecovery => "restart-recovery"
     case FreezeReason.Loop => "loop"
 
-  /** Overload-class reasons: provider saturated, backoff can heal it. */
-  private def isOverloadClass(r: FailoverReason): Boolean = AgentActor.isOverloadReason(r)
+  // 2026-09-28 裁定（ORCH5-P3 / ORCH5-R1：死码清册 ⑤ B3 登记项）——本处原 `isOverloadClass`
+  // （B3 收面期新增的同对象别名）已**整删**：零引用实证 `git grep -n -i overloadclass`
+  // 全仓唯一命中 = 该定义行自身（HEAD :143）；其委托目标 `AgentActor.isOverloadReason`
+  // 仍被 :41 / :54 使用，属活成员，未动。随删的产出物 = 该成员的 scaladoc 一行
+  // （原文迁置，逐字保留，不得随删消失）：Overload-class reasons: provider saturated,
+  // backoff can heal it.
 
   private[agent] val logger = NebflowLogger.forName("nebflow.agent")
 
@@ -727,7 +731,7 @@ object AgentActor extends AgentCore with AgentSession:
     // （depth>0）的放行记忆同样必须随其终态释放（否则 map 只增不减）。
     // 只清本会话键（`SessionApprovals.clear(sessionId)` 幂等）。
     val clearMcpSessionApprovals =
-      IO.delay(nebflow.core.SessionApprovals.clear(state.sessionId.getOrElse("")))
+      IO.delay(nebflow.core.mcp.SessionApprovals.clear(state.sessionId.getOrElse("")))
         .handleErrorWith(_ => IO.unit)
     if state.depth == 0 then
       val hookCtx = buildHookContext(state)

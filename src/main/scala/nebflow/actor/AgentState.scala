@@ -1109,6 +1109,10 @@ extension (s: AgentState)
   // 显式化两法唯一执行面差集（false ⇒ pendingImmediateInputs 不携=idle 工厂
   // 默认 Nil，逐字等价）；本方法=（carryImmediateInputs=false，compaction
   // 不碰）。公开名与签名语义逐字保留，调用点零改动。
+  // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项（`待下批`
+  // 字样为历史遗留）= **已处置**：ORCH2-P6 定案（上条）即最终处置，参数化携带面已落
+  // `resetCarriedExecution` 共享体、两法签名语义逐字保留；末批不再动作，也不迁
+  // TurnBoundary（携带子集差异属真语义差异，非可并项）。
   def resetToIdle(messages: List[Message], turnIdx: Int = s.execution.turnIdx): AgentState =
     resetCarriedExecution(s, messages, turnIdx, carryImmediateInputs = false)
 
@@ -1117,6 +1121,8 @@ extension (s: AgentState)
   // T5/T6 处置；本批留 actor 包原地不动、不删、不改签名、不实现进 TurnBoundary）。
   // 2026-09-27 裁定（ORCH2-P6 定案）：同上——本方法=共享体（carryImmediateInputs
   // =true，#13 携带腿）+ 外层 compaction.pendingJob 清位（原位保留，不进共享体）。
+  // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项（`待下批`
+  // 字样为历史遗留）= **已处置**：同 ORCH2-P6 定案（上条），末批不再动作。
   def resetForInterrupt: AgentState =
     resetCarriedExecution(s, s.execution.messages, s.execution.turnIdx, carryImmediateInputs = true)
       .copy(compaction = s.compaction.copy(pendingJob = None))

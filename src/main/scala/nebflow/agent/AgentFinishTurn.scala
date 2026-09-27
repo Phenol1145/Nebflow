@@ -405,6 +405,13 @@ private[agent] object AgentFinishTurn:
           // TurnBoundary.withCarriedQueues 默认形仅差 pendingEvents 显式覆盖，
           // 但站点专属日期注释组（#25）与本批「注释随代码」铁律耦合 ⇒ 不强并）
           // ——保留原状，Battle-2 靶点。
+          // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项（`待下批`
+          // 字样为历史遗留）= **明确建议**（不再登记为悬空）：处置方案 = ORCH4 台账⑤ 方案 A
+          // ——`TurnBoundary` 边界帧增设显式画像实参（carryDelivery / carryProject 等按站传入），
+          // 把本腿组装收进 TurnBoundary 而字段省略逐站显式；成本 ≈ 组装函数签名 + 3 站点实参，
+          // 零新依赖（可行性：高）。不并入本批理由 = 帧字节层面不可证等价（ORCH2-P5 定案
+          // 「禁静默统一」），强行并入即改线协议字节。落点：`agent/LifecycleEnds.scala`
+          // ORCH5 台账⑤（承接三态表）。
           ExecutionContext
             .idle(messagesWithPending, state.execution.turnIdx)
             .copy(
@@ -482,6 +489,12 @@ private[agent] object AgentFinishTurn:
           // TurnBoundary.withCarriedQueues 默认形仅差 pendingImmediateInputs
           // 显式覆盖，但站点专属日期注释组（Sub-agent barrier/#25）与本批
           // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，Battle-2 靶点。
+          // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 = **明确建议**
+          // （`待下批` 字样为历史遗留）：处置方案 = ORCH4 台账⑤ 方案 A（TurnBoundary 边界帧增设
+          // 显式画像实参 carryDelivery/carryProject，逐站传入；成本 ≈ 组装函数签名 + 3 站点实参，
+          // 零新依赖；可行性：高）；不并入本批理由 = 与站点专属日期注释组（Sub-agent barrier/#25）
+          // 耦合，且帧字节不可证等价（ORCH2-P5「禁静默统一」）。落点：`agent/LifecycleEnds.scala`
+          // ORCH5 台账⑤。
           ExecutionContext
             .idle(messagesWithImmediate, state.execution.turnIdx)
             .copy(
@@ -520,6 +533,11 @@ private[agent] object AgentFinishTurn:
         // TurnBoundary 增设边界帧画像实参（carryDelivery/carryProject:
         // Boolean）或命名 legacy 组装腿，把本调用面组装收进 TurnBoundary 而
         // 字段省略逐站显式。
+        // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 = **明确建议**
+        // （`待下批` 字样为历史遗留）：处置方案 = 上条 ORCH2-P5 所列方案 A（TurnBoundary 边界帧
+        // 增设显式画像实参 carryDelivery/carryProject，逐站传入；成本 ≈ 组装函数签名 + 3 站点
+        // 实参，零新依赖；可行性：高）；不并入本批理由 = 帧字节不可证等价（防回归铁律），
+        // 并入即改线协议字节。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
         _ <- immInputs.flatMap { imm =>
           injectionSourceFor(imm.fromUser, imm.source).map(src =>
             emitInjectedUserEvent(
@@ -601,6 +619,11 @@ private[agent] object AgentFinishTurn:
                         // 恒等价，普查已证），但站点专属日期注释组与本批
                         // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，
                         // Battle-2 靶点。
+                        // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 =
+                        // **明确建议**（`待下批` 字样为历史遗留）：处置方案 = ORCH4 台账⑤ 方案 A
+                        // （TurnBoundary 边界帧显式画像实参，逐站传入；成本 ≈ 组装函数签名 + 3 站点
+                        // 实参，零新依赖）；不并入本批理由 = 帧字节不可证等价（ORCH2-P5「禁静默统一」）
+                        // + 站点专属日期注释组随码铁律。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
                         ExecutionContext
                           .idle(messagesWithQueue, state.execution.turnIdx)
                           .copy(

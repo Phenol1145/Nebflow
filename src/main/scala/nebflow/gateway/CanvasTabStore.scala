@@ -1,7 +1,8 @@
-package nebflow.core
+package nebflow.gateway
 
 import cats.effect.IO
 import io.circe.{Json, parser}
+import nebflow.core.AtomicJson
 import nebflow.shared.NebflowLogger
 
 /**

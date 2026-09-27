@@ -1,6 +1,7 @@
 package nebflow.core
 
 import munit.FunSuite
+import nebflow.core.boot.JvmRequirement
 
 /**
  * JDK 基线闸（B 轨）契约：判定表二值化 + 无法判定时 fail-loud（禁 fail-open）。

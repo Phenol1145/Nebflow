@@ -29,6 +29,17 @@ import scala.jdk.CollectionConverters.*
  *
  * Retention: hard 3-day limit. Old JSONL files and orphaned objects are pruned
  * automatically (at most once per day, checked during logResponse()).
+ *
+ * ── 2026-09-28 裁定（ORCH5-P2 / ORCH5-R1，A2 条：**留置 core 根**，本批不迁 shared）──
+ * 闭包纯净已证：去注释/字符串后实测出边 = {shared} 唯一（迁 shared 后零出边；BOTTOM
+ * 层位天然合法，消费者 agent/llm/gateway/service 均为上层 ⇒ 无反向边）。留置理由 =
+ * 消费面形态：**45 文件 209 处内联 FQN**（仅 1 处为 import 行，44 个是测试文件，测试
+ * 侧「只许 package/import 行」口径下不构成可机械改写面）——迁包收益是语义归位而非
+ * 边削减，却会把末批从「归位 + 删死码」撑成大规模 FQN 重写。建议路径 = 先立「禁内联
+ * FQN」lint（或独立小批，届时连带姊妹 [[ToolsLogWriter]] 一并迁 shared）。建议三态
+ * 归属 = **明确建议**（登记于 `agent/LifecycleEnds.scala` ORCH5 台账⑥，非悬空）。
+ * 本批对本文件**零行为改动**（仅本注；`NebflowLogger.forName("nebflow.llm.logger")`
+ * 等字符串字面量零改）。
  */
 object LlmLogWriter:
 

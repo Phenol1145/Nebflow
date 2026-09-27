@@ -108,7 +108,7 @@ private[agent] object AgentProcessing:
                   if idx > 0 then (modelRef.take(idx), modelRef.drop(idx + 1)) else ("unknown", modelRef)
                 resources.usageRecordStore
                   .record(
-                    nebflow.core.LlmUsageRecord(
+                    nebflow.core.usage.LlmUsageRecord(
                       timestamp = System.currentTimeMillis(),
                       provider = provider,
                       model = model,
@@ -297,6 +297,11 @@ private[agent] object AgentProcessing:
               // ⇒ 本批保留原状。下批方案（Battle-4 候选）：TurnBoundary 边界帧
               // 画像实参（carryDelivery: Boolean，本腿 false/project 照带）或
               // 命名 legacy 组装腿。
+              // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 = **明确建议**
+              // （`待下批` 字样为历史遗留）：处置方案 = 上条 ORCH2-P5 所列方案 A（TurnBoundary 边界帧
+              // 增设显式画像实参 carryDelivery，本腿 false / project 照带，逐站传入；成本 ≈ 组装函数
+              // 签名 + 3 站点实参，零新依赖；可行性：高）；不并入本批理由 = 帧字节不可证等价
+              // （ORCH2-P5「禁静默统一」）。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
               _ <- immInputs.flatMap { imm =>
                 injectionSourceFor(imm.fromUser, imm.source).map(src =>
                   emitInjectedUserEvent(

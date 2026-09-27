@@ -654,7 +654,7 @@ object InteractionHub:
           val tool = p.payload.hcursor.downField("tool").as[String].toOption.getOrElse("")
           val tier = p.payload.hcursor.downField("riskTier").as[String].toOption.getOrElse("")
           if sid.nonEmpty && tool.nonEmpty && tier != "L3" then
-            nebflow.core.SessionApprovals.remember(p.sourceSession, sid, tool)
+            nebflow.core.mcp.SessionApprovals.remember(p.sourceSession, sid, tool)
             logger.infoSync(s"mcpPermission scope=session: session=${p.sourceSession} server=$sid tool=$tool")
           else
             logger.warnSync(

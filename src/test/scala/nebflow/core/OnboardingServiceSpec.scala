@@ -3,6 +3,7 @@ package nebflow.core
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import munit.FunSuite
+import nebflow.gateway.OnboardingService
 import nebflow.shared.FallbackExhaustedError
 import nebflow.shared.*
 

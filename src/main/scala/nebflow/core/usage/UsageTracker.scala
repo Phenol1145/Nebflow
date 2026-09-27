@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.usage
 
 import cats.effect.IO
 import io.circe.parser.decode

@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.usage
 
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.{Decoder, Encoder}

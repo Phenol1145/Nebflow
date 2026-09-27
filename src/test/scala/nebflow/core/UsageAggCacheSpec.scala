@@ -4,6 +4,7 @@ import cats.effect.unsafe.implicits.global
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
+import nebflow.core.usage.*
 
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.Files
@@ -344,6 +345,8 @@ class UsageAggCacheSpec extends FunSuite:
   // ── failure direction: slow, never wrong ────────────────────────────────────
 
   test("an unwritable directory degrades to a correct in-memory result (no 5xx)") {
+    // 2026-09-28 裁定（ORCH5-R2）：预存在 Windows 环境不兼容（本用例 POSIX-only 调用与 HEAD 逐字节相同），按仓内先例（DaemonSpec.scala:198）加 assume ⇒ Windows 跳过 / POSIX 照跑；用例名、用例数、其余断言零变。〔注号口径 = ORCH5-P4 例外面；登记见 agent/LifecycleEnds.scala ORCH5 台账⑦〕
+    assume(!sys.props.getOrElse("os.name", "").toLowerCase.contains("win"), "requires POSIX sh")
     val dir = os.temp.dir()
     writeLedger(dir, sampleRecords)
     val store = new UsageRecordStore(dir)
