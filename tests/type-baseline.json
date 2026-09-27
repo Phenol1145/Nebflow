@@ -1,16 +1,17 @@
 {
   "generatedBy": "scripts/check-js-types.mjs --update",
-  "total": 313,
+  "total": 273,
   "files": {
     "src/main/resources/web/js/activityBar.js": {
       "TS2345": 1,
-      "TS2339": 9
+      "TS2339": 5
     },
     "src/main/resources/web/js/agentManager.js": {
       "TS2339": 3
     },
     "src/main/resources/web/js/bgAgentPopup.js": {
-      "TS2339": 1
+      "TS2339": 4,
+      "TS8032": 1
     },
     "src/main/resources/web/js/canvas.js": {
       "TS2339": 8
@@ -31,12 +32,15 @@
     "src/main/resources/web/js/colResizer.js": {
       "TS2339": 2
     },
+    "src/main/resources/web/js/contacts.js": {
+      "TS2339": 6
+    },
     "src/main/resources/web/js/daemons.js": {
       "TS2339": 7,
       "TS2345": 1
     },
     "src/main/resources/web/js/dropbox.js": {
-      "TS2339": 10
+      "TS2339": 3
     },
     "src/main/resources/web/js/explorer.js": {
       "TS2339": 27,
@@ -45,24 +49,15 @@
     "src/main/resources/web/js/flowAgentPopup.js": {
       "TS2339": 1
     },
-    "src/main/resources/web/js/flowCanvas.js": {
-      "TS2339": 9
-    },
-    "src/main/resources/web/js/flowDag.js": {
-      "TS2339": 2
-    },
     "src/main/resources/web/js/flowHelpers.js": {
       "TS2345": 1,
       "TS2339": 3
     },
-    "src/main/resources/web/js/flowList.js": {
-      "TS2339": 1
-    },
     "src/main/resources/web/js/flowViewers.js": {
-      "TS2339": 5
+      "TS2339": 4
     },
     "src/main/resources/web/js/i18n.js": {
-      "TS2339": 6
+      "TS2339": 5
     },
     "src/main/resources/web/js/input.js": {
       "TS2339": 3,
@@ -72,28 +67,24 @@
       "TS2339": 1
     },
     "src/main/resources/web/js/main.js": {
-      "TS2339": 15,
-      "TS2554": 3,
+      "TS2339": 14,
       "TS2345": 1
     },
     "src/main/resources/web/js/memory.js": {
       "TS2339": 8
     },
     "src/main/resources/web/js/modal.js": {
-      "TS2339": 5
+      "TS2339": 1
     },
     "src/main/resources/web/js/monacoEditor.js": {
       "TS2339": 11
     },
     "src/main/resources/web/js/neblink.js": {
-      "TS2339": 10
+      "TS2339": 1
     },
     "src/main/resources/web/js/notificationBanner.js": {
       "TS2304": 1,
       "TS1005": 1,
-      "TS2339": 1
-    },
-    "src/main/resources/web/js/planMode.js": {
       "TS2339": 1
     },
     "src/main/resources/web/js/scheduled-task.js": {
@@ -102,7 +93,7 @@
       "TS2339": 8
     },
     "src/main/resources/web/js/sidebar.js": {
-      "TS2339": 101,
+      "TS2339": 94,
       "TS2345": 1
     },
     "src/main/resources/web/js/viewers/docx.js": {
