@@ -1131,6 +1131,17 @@ export default {
   'slash.confirmDelete': '确定要删除技能「{skill}」吗？此操作不可撤销。',
   'slash.skillDeleted': '技能「{skill}」已删除',
   'slash.skillDeleteFailed': '删除技能「{skill}」失败：可能不是用户级技能',
+  // 提及补全面板（mention-tokens 批 2）—— @/$ token 补全的徽章与形态说明（与 en.js 成对）
+  'slash.mentionTitle': '提及',
+  'slash.mentionProject': '项目',
+  'slash.mentionFlow': '流程',
+  'slash.mentionFile': '文件',
+  'slash.mentionSkill': '技能',
+  'slash.mentionProjectHint': '引用项目（后跟项目名，如 @project:名称）',
+  'slash.mentionFlowHint': '引用流程（后跟流程名，如 @flow:名称）',
+  'slash.mentionFileRoot': '会话工作区根目录下的路径',
+  'slash.mentionFileCwd': '会话工作区根目录下的相对路径',
+  'slash.mentionFileHome': '用户主目录（home）下的路径',
   // 盾牌（档位的唯一 UI 入口）——三档 tooltip + 切换后的持久化反馈（permshield F1）
   'bypass.toggle': '安全模式：点击切换 确认编辑 / 编辑放行 / 全部放行（全局档位，重启后仍生效）',
   'bypass.title.confirm-edits': '安全模式：确认编辑（全局档位，重启后仍生效）',

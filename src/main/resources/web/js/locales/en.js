@@ -1169,6 +1169,18 @@ export default {
   'slash.confirmDelete': 'Delete skill "{skill}"? This cannot be undone.',
   'slash.skillDeleted': 'Skill "{skill}" deleted',
   'slash.skillDeleteFailed': 'Failed to delete skill "{skill}": not a user-level skill',
+  // Mention autocomplete panel (mention-tokens batch 2) — badges & form hints for
+  // @/$ token completion (paired with zh-CN.js)
+  'slash.mentionTitle': 'Mentions',
+  'slash.mentionProject': 'Project',
+  'slash.mentionFlow': 'Flow',
+  'slash.mentionFile': 'File',
+  'slash.mentionSkill': 'Skill',
+  'slash.mentionProjectHint': 'Reference a project (followed by its name, e.g. @project:name)',
+  'slash.mentionFlowHint': 'Reference a flow (followed by its name, e.g. @flow:name)',
+  'slash.mentionFileRoot': 'Path under the session workspace root',
+  'slash.mentionFileCwd': 'Relative path under the session workspace root',
+  'slash.mentionFileHome': 'Path under the user home directory',
   // Shield (the only UI entry for the mode) — per-mode tooltip + persistence
   // feedback after a switch (permshield F1).
   'bypass.toggle': 'Safety mode: click to cycle Confirm Edits / Auto Edits / Auto All (global mode, still in force after a restart)',
