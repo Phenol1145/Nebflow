@@ -62,8 +62,11 @@
       "TS2339": 5
     },
     "src/main/resources/web/js/input.js": {
-      "TS2339": 3,
-      "TS2353": 1
+      "TS2353": 1,
+      "TS2339": 2
+    },
+    "src/main/resources/web/js/input/slashCommands.js": {
+      "TS2339": 1
     },
     "src/main/resources/web/js/lightbox.js": {
       "TS2339": 1
