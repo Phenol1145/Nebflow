@@ -21,6 +21,7 @@ import nebflow.shared.{NebflowLogger, *}
  * emitSessionBusy / pipeLlmCall 等与 processing/frozen 共用的助手留守
  * AgentActor,经 import AgentActor.* 引用(本 object 只含 def,无顶层状态)。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentIdle.idle；原注保留存证。
 private[agent] object AgentIdle:
   import nebflow.agent.AgentActor.*
 
@@ -32,6 +33,10 @@ private[agent] object AgentIdle:
   // Idle state
   // ============================================================
 
+  // idle 态已整体迁至 agent/AgentIdle.scala(行为保持重构,2026-09-25):idle
+  // 行为及其唯一消费的注入判源助手 inferInjectionSource 的实现都在那边
+  // (方法体逐字未动);此处保留同名委托 def(签名原样),调用点零改动。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentIdle.idle；原注保留存证。
   private[agent] def idle(
     agentDef: AgentDef,
     resources: SharedResources,
@@ -122,7 +127,7 @@ private[agent] object AgentIdle:
           for
             _ <- sessionBusyIO
             _ <- injectedEventIO
-            result <- pipeLlmCall(
+            result <- AgentProcessing.pipeLlmCall(
               agentDef,
               resources,
               depth,
@@ -153,7 +158,7 @@ private[agent] object AgentIdle:
           .withAskMode(Some(question))
           .withStatus(AgentStatus.Processing)
           .withNextLoopTurn
-        pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
+        AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
 
       // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 SkillActivate 带
       // sessionBusyIO2 直投腿，frozen 态唤醒腿为 Resumed 链 + resetCrossTurn——
@@ -182,8 +187,17 @@ private[agent] object AgentIdle:
           // 2026-09-27 裁定（ORCH1-R1 P1 对1）：与 AgentFrozen SkillActivate 腿逐字
           // 同形 ⇒ 统一改指 TurnBoundary.emitForSkill。
           _ <- TurnBoundary.emitForSkill(resources, state, input)
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, processingState, None, DispatchCause.UserWake)
+          result <- AgentProcessing.pipeLlmCall(
+            agentDef,
+            resources,
+            depth,
+            parentRef,
+            processingState,
+            None,
+            DispatchCause.UserWake
+          )
         yield result
+        end for
 
       case AgentCommand.Interrupt() =>
         // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 Interrupt = no-op 留
@@ -222,7 +236,7 @@ private[agent] object AgentIdle:
           idle(agentDef, resources, depth, parentRef, resetState)
 
       case AgentCommand.TriggerCompaction(mode, replyDeferred, postCompactInstruction) =>
-        handleTriggerCompaction(
+        AgentCompactionHandlers.handleTriggerCompaction(
           agentDef,
           resources,
           depth,
@@ -249,7 +263,7 @@ private[agent] object AgentIdle:
             "model-switch-compact",
             s"newWindow=$window estimated=$estimatedTokens threshold=$threshold msgs=${newState.messages.size}"
           )
-          handleTriggerCompaction(
+          AgentCompactionHandlers.handleTriggerCompaction(
             agentDef,
             resources,
             depth,
@@ -358,7 +372,7 @@ private[agent] object AgentIdle:
             _ <- sessionBusyIO
             _ <- receiveVisibility(waiting = false)
             _ <- touchBarrierSnapshot(resources, state.sessionId, newOutstanding, held.size)
-            result <- pipeLlmCall(
+            result <- AgentProcessing.pipeLlmCall(
               agentDef,
               resources,
               depth,
@@ -384,7 +398,7 @@ private[agent] object AgentIdle:
             _ <- sessionBusyIO
             _ <- receiveVisibility(waiting = false)
             _ <- touchBarrierSnapshot(resources, state.sessionId, 0, 0)
-            result <- pipeLlmCall(
+            result <- AgentProcessing.pipeLlmCall(
               agentDef,
               resources,
               depth,
@@ -421,7 +435,7 @@ private[agent] object AgentIdle:
               _ <- sessionBusyIO
               _ <- receiveVisibility(waiting = false)
               _ <- touchBarrierSnapshot(resources, state.sessionId, newOutstanding, 0)
-              result <- pipeLlmCall(
+              result <- AgentProcessing.pipeLlmCall(
                 agentDef,
                 resources,
                 depth,
@@ -554,7 +568,7 @@ private[agent] object AgentIdle:
           // 投递；不空闲则延迟（不消费队列，pendingMailQueueCount=1 保持「有货
           // 未投递」状态），由子 agent 完成事件驱动的 turn 结束重检
           // （finishTurnCont drain 分支的 gate）投递。
-          idleOk <- fullyIdle(sid, state, resources)
+          idleOk <- AgentFinishTurn.fullyIdle(sid, state, resources)
           result <-
             if !idleOk then
               IO(
@@ -607,7 +621,7 @@ private[agent] object AgentIdle:
                             // Duplicate within window: consume the item (queue + WS)
                             // but inject nothing — sender semantics untouched.
                             nebflow.core.flow.MailQueueStore.removeHead(sid).void *>
-                              emitDequeuedWs(state.wsSend, sid, item.id)
+                              AgentFinishTurn.emitDequeuedWs(state.wsSend, sid, item.id)
                           case true =>
                             for
                               _ <- nebflow.core.flow.MailQueueStore.removeHead(sid).void
@@ -627,7 +641,7 @@ private[agent] object AgentIdle:
                                 delivery = Some("queue")
                               )
                               // Emit WS so frontend removes the pending item
-                              _ <- emitDequeuedWs(state.wsSend, sid, item.id)
+                              _ <- AgentFinishTurn.emitDequeuedWs(state.wsSend, sid, item.id)
                             yield ()
                         }
                     }
@@ -644,7 +658,7 @@ private[agent] object AgentIdle:
       case AgentCommand.RestartAgent(level) =>
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "restart-idle", s"level=${level.toString}")
         for
-          restartState <- restartStateFor(level, state, resources)
+          restartState <- AgentProcessing.restartStateFor(level, state, resources)
           _ <- state
             .wsSend(
               Json.obj(
@@ -654,8 +668,16 @@ private[agent] object AgentIdle:
               )
             )
             .handleErrorWith(_ => IO.unit)
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, restartState.withNextLoopTurn, None)
+          result <- AgentProcessing.pipeLlmCall(
+            agentDef,
+            resources,
+            depth,
+            parentRef,
+            restartState.withNextLoopTurn,
+            None
+          )
         yield result
+        end for
 
       case _ =>
         IO.pure(idle(agentDef, resources, depth, parentRef, state))

@@ -50,7 +50,7 @@ private[agent] object BehaviorCommon:
       // 每次历史重放复活。详见 emitAbandonedCompaction 文档。
       // compactui 批（2026-09-15 事故）：与 processing 的 Interrupt 同款终局帧
       // （此处原先同样只清 pendingCompaction 不发帧）。
-      _ <- emitAbandonedCompaction(state, depth)
+      _ <- AgentCompactionHandlers.emitAbandonedCompaction(state, depth)
 
       _ <- state.pendingCompaction
         .flatMap(_.replyDeferred)
@@ -59,7 +59,7 @@ private[agent] object BehaviorCommon:
       // interrupted team agent isn't stuck "running" in the Teams panel.
       // Back to idle without resuming — clear the team busy mark so a
       // frozen-then-interrupted team agent isn't stuck "running".
-      _ <- markTeamIdle(agentDef, state.sessionId)
+      _ <- AgentFinishTurn.markTeamIdle(agentDef, state.sessionId)
       // R2 closure (wait-timeout-fix): user cancel is the guaranteed exit
       // from WaitingForUser (AskUser/permission parks the turn fiber on a
       // deferred — no finishTurnCont runs). Without this touch the registry
@@ -84,10 +84,12 @@ private[agent] object BehaviorCommon:
       // compactui 批（2026-09-15 事故 ②）：dropCompactionScratch 必须在
       // withPendingCompaction(None) **之前**应用（判据依赖作业仍在）。
       // compactui 批（2026-09-15 事故 ②）：同 processing 面，摘压缩轮临时输入。
-      val interruptedState = dropCompactionScratch(state).resetForInterrupt
+      val interruptedState = AgentCompactionHandlers
+        .dropCompactionScratch(state)
+        .resetForInterrupt
         .withCurrentTurnId(state.execution.currentTurnId + 1)
         .withPendingCompaction(None)
-      idle(agentDef, resources, depth, parentRef, interruptedState)
+      AgentIdle.idle(agentDef, resources, depth, parentRef, interruptedState)
     end for
   end interruptToIdle
 
@@ -110,7 +112,7 @@ private[agent] object BehaviorCommon:
     for
       _ <- ctx.cancelCurrentTurn()
 
-      _ <- killSessionShellProcesses(state)
+      _ <- nebflow.core.tools.BgTaskRegistry.reclaimSession(state.sessionId, state.wsSend, state.rootSessionId)
       _ <- betweenKillAndHooks
       _ <- fireLifecycleStopHooks(resources, state)
     yield Behaviors.stopped
@@ -144,7 +146,7 @@ private[agent] object BehaviorCommon:
         .flatMap(_.replyDeferred)
         .traverse_(d => d.complete(Left("Restarted by supervisor")).void.handleErrorWith(_ => IO.unit))
       _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-      restartState <- restartStateFor(level, state, resources)
+      restartState <- AgentProcessing.restartStateFor(level, state, resources)
       _ <- state
         .wsSend(
           Json.obj(
@@ -154,7 +156,7 @@ private[agent] object BehaviorCommon:
           )
         )
         .handleErrorWith(_ => IO.unit)
-      result <- pipeLlmCall(agentDef, resources, depth, parentRef, dispatchState(restartState), None)
+      result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, dispatchState(restartState), None)
     yield result
     end for
   end restartAgentCore
@@ -169,9 +171,7 @@ private[agent] object BehaviorCommon:
    * mail-queue wedge) 语义），log 语句与回本态行为构造留守各案体。
    */
   private[agent] def mailQueuedCountUp(state: AgentState): AgentState =
-    state.copy(execution =
-      state.execution.copy(pendingMailQueueCount = state.execution.pendingMailQueueCount + 1)
-    )
+    state.copy(execution = state.execution.copy(pendingMailQueueCount = state.execution.pendingMailQueueCount + 1))
 
   // ============================================================
   // CompactionComplete stale 兜底（ORCH2-P1）
@@ -182,7 +182,7 @@ private[agent] object BehaviorCommon:
    * stale 兜底公共段逐字同形（"stale-compaction-discarded" 日志 + detail
    * fold、缓存失效、deferred 失败结算、结果丢弃、留在本态）⇒ 提取本共享
    * handler。两态真差异显式参数化：staleReplyMsg = deferred 失败结算文案
-   *（两站字面量不同 ⇒ 原样留各案体作实参）；clearPendingCompaction = Some
+   * （两站字面量不同 ⇒ 原样留各案体作实参）；clearPendingCompaction = Some
    * 腿回本态前是否清压缩作业（frozen=true / idle=false——设计差，不统一）；
    * 回本态构造以 stay 续参注入各态「留在本态」。processing 态为真压缩收尾
    * 面 ⇒ 真语义差异（ORCH2-P3，AgentProcessing 行侧注记，不并入本腿）。

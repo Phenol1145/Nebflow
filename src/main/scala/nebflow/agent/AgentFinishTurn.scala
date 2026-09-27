@@ -17,6 +17,7 @@ import nebflow.shared.{NebflowLogger, *}
  * 默认参数原样),全部调用点零改动;pipeLlmCall / pipeToolExecutions 留守
  * AgentActor,经 import AgentActor.* 引用。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.handleLlmCompleteBranch / finishTurn / finishTurnCont / markTeamBusy / markTeamIdle / fullyIdle / emitDequeuedWs；原注保留存证。
 private[agent] object AgentFinishTurn:
   import nebflow.agent.AgentActor.*
 
@@ -24,6 +25,13 @@ private[agent] object AgentFinishTurn:
   // LlmComplete branch selector
   // ============================================================
 
+  // turn 收尾族已整体迁至 agent/AgentFinishTurn.scala(行为保持重构,2026-09-25):
+  // handleLlmCompleteBranch / finishTurn / finishTurnCont / markTeamBusy /
+  // markTeamIdle / fullyIdle / emitDequeuedWs 的实现都在那边(方法体逐字未动);
+  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。pipeLlmCall /
+  // pipeToolExecutions 后随 processing 域迁至 agent/AgentProcessing.scala(同日,
+  // 见上方 processing 委托处注释)。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.handleLlmCompleteBranch；原注保留存证。
   private[agent] def handleLlmCompleteBranch(
     agentDef: AgentDef,
     resources: SharedResources,
@@ -39,7 +47,7 @@ private[agent] object AgentFinishTurn:
     // Compact turn: tools disabled (pipeLlmCall sets tools=Some(Nil)),
     // text-only summary required.
     if state.pendingCompaction.isDefined && result.toolCalls.isEmpty && result.text.nonEmpty then
-      handleCompactResponse(agentDef, resources, depth, parentRef, state, result.text)
+      AgentCompactionHandlers.handleCompactResponse(agentDef, resources, depth, parentRef, state, result.text)
     else if state.pendingCompaction.exists(
         _.phase == CompactionPhase.Compact
       ) && result.toolCalls.isEmpty && result.text.isEmpty
@@ -54,7 +62,7 @@ private[agent] object AgentFinishTurn:
       // the circuit-breaker counter, emits CompactFailed, completes the
       // deferred waiter, and (auto-compaction) ends the turn with an honest
       // failure instead of laundering it through the mail-reminder mechanism.
-      handleCompactFailure(
+      AgentCompactionHandlers.handleCompactFailure(
         agentDef,
         resources,
         depth,
@@ -63,16 +71,31 @@ private[agent] object AgentFinishTurn:
         "Compact phase returned no text (thinking-only response) — the summary must be written as text, not reasoning"
       )
     else if state.pendingCompaction.isDefined && result.toolCalls.nonEmpty then
-      handleCompactFailure(agentDef, resources, depth, parentRef, state, "Compact model unexpectedly called tools")
+      AgentCompactionHandlers.handleCompactFailure(
+        agentDef,
+        resources,
+        depth,
+        parentRef,
+        state,
+        "Compact model unexpectedly called tools"
+      )
     else if state.askMode.isDefined && result.toolCalls.isEmpty then
-      handleAskComplete(agentDef, resources, depth, parentRef, state, result.text, result.model)
+      AgentCompactionHandlers.handleAskComplete(agentDef, resources, depth, parentRef, state, result.text, result.model)
     else if result.toolCalls.nonEmpty then
-      pipeToolExecutions(agentDef, resources, depth, parentRef, state.withEmptyResponseRetries(0), result, replyTo)
+      AgentProcessing.pipeToolExecutions(
+        agentDef,
+        resources,
+        depth,
+        parentRef,
+        state.withEmptyResponseRetries(0),
+        result,
+        replyTo
+      )
     else if result.text.nonEmpty || result.thinking.nonEmpty then
       // Mail check: team members must call Mail before finishing.
       // After MaxMailReminders retries, give up and finishTurn (avoid infinite loop).
       if state.expectsMail && !state.mailUsedThisTurn && state.mailReminders < MaxMailReminders then
-        handleMissingMail(agentDef, resources, depth, parentRef, state, replyTo, result)
+        AgentProcessing.handleMissingMail(agentDef, resources, depth, parentRef, state, replyTo, result)
       else
         if state.expectsMail && !state.mailUsedThisTurn then
           logAgentEvent(
@@ -96,7 +119,7 @@ private[agent] object AgentFinishTurn:
           textAlreadyStreamed = true,
           result.model
         )
-    else handleEmptyResponse(agentDef, resources, depth, parentRef, state, replyTo, result)
+    else AgentCompactionHandlers.handleEmptyResponse(agentDef, resources, depth, parentRef, state, replyTo, result)
 
   // ============================================================
   // Finish turn
@@ -139,7 +162,8 @@ private[agent] object AgentFinishTurn:
         val now = System.currentTimeMillis()
         (
           // compactui 批（2026-09-15 事故 ②）：同中断面，先把压缩轮临时输入摘掉。
-          dropCompactionScratch(state)
+          AgentCompactionHandlers
+            .dropCompactionScratch(state)
             .withPendingCompaction(None)
             .withCompactionFailures(state.compactionFailures + 1)
             .withLastCompactionFailureAt(now),
@@ -151,7 +175,7 @@ private[agent] object AgentFinishTurn:
             ) *>
             // compactui 批（2026-09-15 事故 ①）：本路径原先只记 lifecycle 事件，
             // 前端收不到终局帧 ⇒ pill 永挂（与中断面同一缺陷类，一并补齐）。
-            emitAbandonedCompaction(state, depth)
+            AgentCompactionHandlers.emitAbandonedCompaction(state, depth)
         )
       case None => (state, IO.unit)
     // #22 (2026-08-19): 空轮必须留痕——thinking-only 响应（text 空、无工具）
@@ -331,7 +355,7 @@ private[agent] object AgentFinishTurn:
         val updatedState = state
           .copy(execution = TurnBoundary.toIdle(execAfterForward, newMessages, owedAfter))
           .withMailTurnCount(state.mailTurnCount + 1)
-        idle(agentDef, resources, depth, parentRef, updatedState)
+        AgentIdle.idle(agentDef, resources, depth, parentRef, updatedState)
       end for
     end returnToIdle
     if subagentsInFlight && completionTargets.nonEmpty then
@@ -415,7 +439,7 @@ private[agent] object AgentFinishTurn:
           // flight — park the debt (owedAfter) and keep the requester waiting.
           if subagentsInFlight then IO.unit
           else completionTargets.traverse_(_ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithPending))
-        result <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+        result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
       yield result
       end for
     else if state.pendingCompaction.isEmpty && state.execution.pendingImmediateInputs.nonEmpty then
@@ -524,7 +548,7 @@ private[agent] object AgentFinishTurn:
           if subagentsInFlight then IO.unit
           else
             completionTargets.traverse_(_ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithImmediate))
-        result <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+        result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
       yield result
       end for
     else if state.pendingCompaction.isEmpty && state.execution.pendingMailQueueCount > 0 then
@@ -613,7 +637,7 @@ private[agent] object AgentFinishTurn:
                         completionTargets.traverse_(
                           _ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithQueue)
                         )
-                    r <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+                    r <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
                   yield r
                 // Delivery-layer fingerprint dedup (P0): same sender+recipient+content
                 // within the 30min window is consumed without injection — the
@@ -725,6 +749,7 @@ private[agent] object AgentFinishTurn:
   // 引用（本批包边预算仅允许 →shared/→actor 记账增长）；本方法两枚 IO
   // 取数 registry / RunningFlowRegistry.list = 既有唯一实现本体不动
   // （委托链 AgentActor.fullyIdle 零触碰，无转发 shim）。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.fullyIdle；原注保留存证。
   private[agent] def fullyIdle(
     sid: String,
     state: AgentState,

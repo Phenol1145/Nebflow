@@ -452,6 +452,7 @@ private[agent] object TurnBoundary:
    * （原形 = agentDef.category == "team" 门 + sid 存在性折叠，真值表逐字
    * 等价）；两方法的写入体与 AgentActor 委托面零触碰。
    */
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.markTeamBusy / AgentFinishTurn.markTeamIdle；原注保留存证。
   private[agent] def teamMarkEligible(agentDef: AgentDef, sid: Option[String]): Boolean =
     agentDef.category == "team" && sid.nonEmpty
 
@@ -508,6 +509,7 @@ private[agent] object TurnBoundary:
    * 随调用点实参保持。纯 Boolean 组合，无副作用/短路可观测差异 ⇒ 行为逐字不变；
    * 委托链 AgentActor.fullyIdle 零触碰，无转发 shim。
    */
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.fullyIdle；原注保留存证。
   private[agent] def mailDrainGateIdle(treeIdle: Boolean, state: AgentState): Boolean =
     // agent 内部权威 barrier（registry 快照之外的一层防御）
     val internalIdle = state.execution.outstandingSubagentResults == 0

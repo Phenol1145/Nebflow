@@ -19,9 +19,17 @@ import nebflow.shared.{NebflowLogger, *}
  * reasonStr / ErrorFreezeEscalationThreshold 等冻结域 helper 与常量留守
  * AgentActor,经 import AgentActor.* 引用。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFrozen.enterErrorFrozen / enterFrozen / frozen；原注保留存证。
 private[agent] object AgentFrozen:
   import nebflow.agent.AgentActor.*
 
+  // 冻结域(enterErrorFrozen / enterFrozen / frozen)已整体迁至 agent/AgentFrozen.scala
+  // (行为保持重构,2026-09-25):方法体逐字未动,frozen 行为内部的 actor 变换与
+  // 自递归(返回下一 frozen behavior)保持原逻辑;notifyEscalation / sessionIdOfRef /
+  // updateRegistryEscalation / updateRegistryFrozenReason / currentNextChange /
+  // reasonStr / ErrorFreezeEscalationThreshold 等冻结域 helper 与常量留守此处;
+  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFrozen.enterErrorFrozen；原注保留存证。
   /**
    * v2 错误冻结转入辅助（§3.3/§6.1 步骤 3）：transient 类 LLM 失败 → 立即
    * persist（复用 fatal 路径的 save 模式）→ enterErrorFrozen——冻结期间零 LLM
@@ -181,7 +189,7 @@ private[agent] object AgentFrozen:
                     isSubagent = depth > 0,
                     state.sessionId
                   ) *> updateRegistryFrozenReason(resources, state.sessionId, None) *>
-                    pipeLlmCall(agentDef, resources, depth, parentRef, state, replyTo)
+                    AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, state, replyTo)
                 else
                   IO.pure(
                     frozen(
@@ -220,7 +228,7 @@ private[agent] object AgentFrozen:
                   isSubagent = depth > 0,
                   state.sessionId
                 ) *> updateRegistryFrozenReason(resources, state.sessionId, None) *>
-                  pipeLlmCall(agentDef, resources, depth, parentRef, state, replyTo)
+                  AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, state, replyTo)
               }
             else
               IO.pure(
@@ -283,7 +291,15 @@ private[agent] object AgentFrozen:
                 isSubagent = depth > 0,
                 state.sessionId
               ) *> updateRegistryFrozenReason(resources, state.sessionId, None) *>
-                pipeLlmCall(agentDef, resources, depth, parentRef, wakeState, replyTo2, DispatchCause.UserWake)
+                AgentProcessing.pipeLlmCall(
+                  agentDef,
+                  resources,
+                  depth,
+                  parentRef,
+                  wakeState,
+                  replyTo2,
+                  DispatchCause.UserWake
+                )
             }
           end if
         else
@@ -349,7 +365,7 @@ private[agent] object AgentFrozen:
             isSubagent = depth > 0,
             state.sessionId
           ) *> updateRegistryFrozenReason(resources, state.sessionId, None) *>
-            pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
+            AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
         }
 
       // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 SkillActivate = 冻结唤醒
@@ -384,7 +400,15 @@ private[agent] object AgentFrozen:
           // 2026-09-27 裁定（ORCH1-R1 P1 对1）：与 AgentIdle SkillActivate 唤醒腿
           // 逐字同形 ⇒ 统一改指 TurnBoundary.emitForSkill。
           _ <- TurnBoundary.emitForSkill(resources, state, input)
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, processingState, None, DispatchCause.UserWake)
+          result <- AgentProcessing.pipeLlmCall(
+            agentDef,
+            resources,
+            depth,
+            parentRef,
+            processingState,
+            None,
+            DispatchCause.UserWake
+          )
         yield result
         end for
 

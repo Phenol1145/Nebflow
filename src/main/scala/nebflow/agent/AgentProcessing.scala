@@ -29,6 +29,7 @@ import scala.concurrent.duration.*
  * logAgentEvent / persistIfSession 等共用助手留驻 AgentActor / AgentCore /
  * AgentSession,经 import AgentActor.* 引用。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentProcessing.processing / handleMissingMail / restartStateFor / pipeLlmCall / pipeToolExecutions；原注保留存证。
 private[agent] object AgentProcessing:
   import nebflow.agent.AgentActor.*
 
@@ -36,6 +37,12 @@ private[agent] object AgentProcessing:
   // Processing state
   // ============================================================
 
+  // processing 域已整体迁至 agent/AgentProcessing.scala(行为保持重构,2026-09-25):
+  // processing 行为、mail 检查 / supervisor 重启助手与两枚 dispatch 管道的实现
+  // 都在那边(方法体逐字未动,详见 AgentProcessing.scala 头注);此处保留同名
+  // 委托 def(签名与默认参数原样),调用点零改动。hasUsedMail / rollbackLastToolCall
+  // 为私有单消费助手,随实现迁走、不留委托。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentProcessing.processing；原注保留存证。
   private[agent] def processing(
     agentDef: AgentDef,
     resources: SharedResources,
@@ -120,7 +127,7 @@ private[agent] object AgentProcessing:
                       .warn(s"usage record failed: ${e.getMessage}")
                   )
               case _ => IO.unit
-          usageEvent *> usageRecordIO *> handleLlmCompleteBranch(
+          usageEvent *> usageRecordIO *> AgentFinishTurn.handleLlmCompleteBranch(
             agentDef,
             resources,
             depth,
@@ -370,7 +377,17 @@ private[agent] object AgentProcessing:
                       .max(LlmFailBackoffBaseMs * (1L << math.max(state.llmFailRetries, 1) - 1), OverloadBackoffMinMs),
                     LlmFailBackoffMaxMs
                   ) + jitter
-              enterErrorFrozen(agentDef, resources, depth, parentRef, state, replyTo, errReason, resumeInMs, error)
+              AgentFrozen.enterErrorFrozen(
+                agentDef,
+                resources,
+                depth,
+                parentRef,
+                state,
+                replyTo,
+                errReason,
+                resumeInMs,
+                error
+              )
             else
               val agentError =
                 AgentError(
@@ -511,7 +528,7 @@ private[agent] object AgentProcessing:
                       .withCompactionFailures(state.compactionFailures + 1)
                       .withLastCompactionFailureAt(System.currentTimeMillis())
                   else fatalState
-                idle(agentDef, resources, depth, parentRef, finalState)
+                AgentIdle.idle(agentDef, resources, depth, parentRef, finalState)
               end for
             end if
           end if
@@ -709,7 +726,7 @@ private[agent] object AgentProcessing:
                   correlationId = Some(sid).filter(_.nonEmpty)
                 )
               }
-              result <- enterErrorFrozen(
+              result <- AgentFrozen.enterErrorFrozen(
                 agentDef,
                 resources,
                 depth,
@@ -928,7 +945,7 @@ private[agent] object AgentProcessing:
                         case (Some(userCmd), execAfter) =>
                           (ctx.self ! userCmd) *>
                             IO.pure(
-                              idle(
+                              AgentIdle.idle(
                                 agentDef,
                                 resources,
                                 depth,
@@ -939,7 +956,7 @@ private[agent] object AgentProcessing:
                         case (None, _) =>
                           // Truly nothing queued during the window — the continuation
                           // state (messages compacted, pendingCompaction cleared) is final.
-                          IO.pure(idle(agentDef, resources, depth, parentRef, compactedState))
+                          IO.pure(AgentIdle.idle(agentDef, resources, depth, parentRef, compactedState))
                 yield result
                 end for
               end if
@@ -969,7 +986,7 @@ private[agent] object AgentProcessing:
               yield ()
               compactionPending.flatMap(_.replyTo) match
                 case Some(replyTo) =>
-                  baseIO *> finishTurn(
+                  baseIO *> AgentFinishTurn.finishTurn(
                     agentDef,
                     resources,
                     depth,
@@ -984,7 +1001,7 @@ private[agent] object AgentProcessing:
                   )
                 case None =>
                   if compactionPending.exists(!_.resumeAfterCompact) then
-                    baseIO *> IO.pure(idle(agentDef, resources, depth, parentRef, failedState))
+                    baseIO *> IO.pure(AgentIdle.idle(agentDef, resources, depth, parentRef, failedState))
                   else baseIO *> IO.pure(processing(agentDef, resources, depth, parentRef, failedState, pending))
               end match
           end match
@@ -1245,8 +1262,15 @@ private[agent] object AgentProcessing:
         for
           _ <- c.log.error(s"Agent error in processing, returning to idle: ${err.getMessage}")
           _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-          _ <- markTeamIdle(agentDef, state.sessionId)
-        yield idle(agentDef, resources, depth, parentRef, state.withStatus(AgentStatus.Idle).withInteraction(None))
+          _ <- AgentFinishTurn.markTeamIdle(agentDef, state.sessionId)
+        yield AgentIdle.idle(
+          agentDef,
+          resources,
+          depth,
+          parentRef,
+          state.withStatus(AgentStatus.Idle).withInteraction(None)
+        )
+    end new
   end processing
 
   // ============================================================
@@ -1409,7 +1433,7 @@ private[agent] object AgentProcessing:
     // MUST run unconditionally BEFORE the freeze gate (spec 6a / B12): a frozen
     // team agent must still read busy in the Teams panel — putting this in the
     // dispatch branch would leave frozen team agents marked idle.
-    markTeamBusy(agentDef, state.sessionId) *>
+    AgentFinishTurn.markTeamBusy(agentDef, state.sessionId) *>
       // ── Freeze gate (freeze-schedule spec ⑥, F2 single choke point) ──
       // 所有 AgentActor 层 dispatch 都经过本 shadow；AgentCore 内部递归
       // （maybeAutoCompact 等）静态解析不经此处，但只会在 gate 放行后执行。
@@ -1435,7 +1459,7 @@ private[agent] object AgentProcessing:
               "freeze-enter",
               s"resumeAt=${window.nextChangeAt.map(_.toString).getOrElse("none")}"
             )
-            enterFrozen(agentDef, resources, depth, parentRef, state, replyTo, window.nextChangeAt)
+            AgentFrozen.enterFrozen(agentDef, resources, depth, parentRef, state, replyTo, window.nextChangeAt)
           else
             AgentActor.corePipeLlmCall(
               agentDef,
