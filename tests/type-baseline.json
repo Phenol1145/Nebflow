@@ -45,8 +45,11 @@
       "TS2339": 3
     },
     "src/main/resources/web/js/explorer.js": {
-      "TS2339": 27,
+      "TS2339": 24,
       "TS2554": 2
+    },
+    "src/main/resources/web/js/explorer/selection.js": {
+      "TS2339": 3
     },
     "src/main/resources/web/js/flowAgentPopup.js": {
       "TS2339": 1
