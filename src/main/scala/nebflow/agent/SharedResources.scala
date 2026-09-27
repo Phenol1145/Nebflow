@@ -281,6 +281,22 @@ case class SharedResources(
     system.spawn(
       BackoffSupervisor(
         childRef = childRef,
+        // 2026-09-28 裁定（`ORCH4-P4` restart 漂移 = 行为修复非保持 ⇒ 登记为**「ORCH4 修复候选，待用户拍板」**；本批仅行侧并置注、**零代码**、不得顺手修；并置注授权 = ORCH4-R4）：
+        // 本 childSpawnFn 是 Delegate/SubTask 的 **restart 重建路径**（触发链 =
+        // AgentControlTool.doRestart → `rec.ref ! Stop` → BackoffSupervisor.onSignal
+        // Terminated（BackoffSupervisor.scala:185）→ 重启循环 :255 调本闭包）。
+        // **丢字段事实（结构性，逐字段来源已核）**：`NodeRunner.SpawnParams` 共 27 字段，
+        // 而 `AgentActor.apply` 共 34 参数——SpawnParams **无** `rulesMd` / `agentsMd` /
+        // `folderId` / `gitBranch` / `freezeExempt` / `compactThresholdRatio` 六字段，且无
+        // `contextWindow` 覆盖位（本工厂恒取 `SharedResources.contextWindow`）。⇒ 经本路径
+        // 重建的 AgentActor，上述六参**恒为默认值**（None/None/None/None/false/None）、
+        // contextWindow 恒为**全局值**，与初次 spawn 时站点是否传过这些实参无关。
+        // 现状无现场漂移：今日经 SpawnParams 的 delegate/subtask 站点本就不传这六参
+        // （DelegateTool.scala:314-327 / SubTaskTool.scala 构造实参面同样不含）。
+        // 但**潜伏漂移**：一旦 depth=0 根构造改经通用 SpawnParams（本批取专用面，见
+        // `spawnRootAgent`），根会话的 rulesMd/folderId/gitBranch/compactThresholdRatio
+        // 将进入 SpawnParams ⇒ 若将来根会话变成被监督，重启即丢这四参。本批只标注、不修，
+        // 亦**不得**把六字段加宽进 SpawnParams（ORCH4-R4①「不得被迫传新参」）。
         childSpawnFn = (sys: ActorSystem, recoveredMessages: List[Message]) =>
           spawnAgentActor(
             sys,
@@ -379,6 +395,66 @@ case class SharedResources(
     )
   end agentActorBehavior
 
+  // ── 编排收敛第四批 T9（ORCH4-R4）：depth=0 根会话专用 spawn 参数面 + 工厂扩展方法 ──
+  //    裁定原文：根构造只许走「root 专用参数面 / 工厂扩展方法」，**不允许**为了省事
+  //    直接把 root 专属语义灌进通用 SpawnParams。本实现 = 专用参数面
+  //    `SharedResources.RootSpawnParams`（文件末伴生对象）+ 本扩展方法；通用
+  //    `SpawnParams` 形状与既有三调用点（spawnAgentActor / MemoryTrack /
+  //    spawnSupervisedAdapter）实参**零变更**，无人被迫传新参。
+
+  /**
+   * 2026-09-28 裁定（ORCH4-R4；`ORCH4-P3` T9 四点口径）：depth=0 根会话 spawn 工厂扩展方法。
+   *
+   * 承接 T9-P1：`gateway/WebSocketRoutes.doSpawnRootAgent` 原为全仓唯一**直构**
+   * `rootSystem.spawn(AgentActor(...))` 的 root 点（原 :208-239）。方法体 = 原直构
+   * 实参**逐字段镜像**（HEAD 表达式 → 本面字段 → AgentActor 落点字段的三列映射表
+   * 见本批 ORCH4 报告 summary）：`depth = 0` /
+   * `parentRef = None` / `rootSessionId = sessionId` 三项为 root 专属常量，硬编于本方法
+   * （不入通用 SpawnParams）；**actor 名（spawn 第二实参）不硬编**——原字面
+   * `s"agent-$sessionId"` 由调用方经 `RootSpawnParams.actorName` **原样传入**
+   * （2026-09-28 审计 Finding-4 订正：先前版本在工厂内改写为 `s"agent-${p.sessionId}"`，
+   * 值虽相同但**字面文本被改**，违红线 6「字符串字面量零改动」⇒ 现改为字面随迁）。
+   * `readTracker` /
+   * `fileHistory` 由本方法创建（镜像原站点 `ReadTracker.create` / `FileHistory.create()`
+   * + 两实参恒 `Some(...)`），等价于通用工厂 `withTracking = true` 路径。
+   *
+   * 行为保持：receiver `this` == 调用方原 `resources` 实参（`sharedResources`），
+   * 与原直构的 `resources = sharedResources` 同值；registry 注册 / `rootAgents`
+   * 缓存 / SessionStart hook / AgentRecord 组装**不属本工厂**，仍留 WebSocketRoutes
+   * 原站点（与通用工厂的既有分工一致——通用工厂亦不注册）。
+   */
+  def spawnRootAgent(system: ActorSystem, p: SharedResources.RootSpawnParams): IO[ActorRef[AgentCommand]] =
+    for
+      readTracker <- ReadTracker.create
+      fileHistory <- FileHistory.create()
+      ref <- system.spawn(
+        AgentActor(
+          agentDef = p.agentDef,
+          resources = this,
+          wsSend = p.wsSend,
+          depth = 0,
+          parentRef = None,
+          sessionId = Some(p.sessionId),
+          sessionName = p.sessionName,
+          initialMessages = p.initialMessages,
+          readTracker = Some(readTracker),
+          fileHistory = Some(fileHistory),
+          contextWindow = p.contextWindow,
+          projectRoot = p.projectRoot,
+          rulesMd = p.rulesMd,
+          folderId = p.folderId,
+          safetyMode = p.safetyMode,
+          gitBranch = p.gitBranch,
+          rootSessionId = p.sessionId,
+          sandboxEnabled = p.sandboxEnabled,
+          compactThresholdRatio = p.compactThresholdRatio
+        ),
+        p.actorName
+      )
+    yield ref
+
+  end spawnRootAgent
+
   // ── 严格DAG第⑥步第三批A裁定(dwfq-5c7a31ea-1,M2):三个静态面注册器的安装行(构造即
   //    注册,幂等;生产 boot 与测试装配均经本构造——GatewayMain / SpecResources;各注册器
   //    未注册兜底语义见 core/AgentRuntimePort.scala)。─────────────────────────────
@@ -402,5 +478,57 @@ case class SharedResources(
         ctx: ToolContext
       ): ActorRef[List[String]] =
         AskUserAnswerBridge.ref(target, items, requestId, ctx)
+  )
+end SharedResources
+
+// ── 编排收敛第四批 T9（ORCH4-R4）：depth=0 根会话专用 spawn 参数面 ────────────────
+/**
+ * `SharedResources.spawnRootAgent` 的参数面（2026-09-28 裁定 ORCH4-R4；口径 = `ORCH4-P3`）。
+ *
+ * 为什么独立于 `NodeRunner.SpawnParams`（裁定原文：root 只许走专用参数面）：
+ *   - 根会话要传的 4 个字段 `rulesMd` / `folderId` / `gitBranch` /
+ *     `compactThresholdRatio`，以及一个**按会话 modelOverride 算出的**
+ *     `contextWindow` 覆盖位，通用 `SpawnParams` 都没有（其 27 字段是
+ *     Delegate/SubTask/flow 三轨差异面的并集，且 contextWindow 恒取
+ *     `SharedResources.contextWindow`）。把 root 专属语义灌进通用面会同时污染
+ *     Delegate/SubTask/flow 三轨的语义面并被迫改动既有调用点实参（ORCH4-R4①禁）。
+ *   - 字段名与类型**逐字镜像 HEAD 的直构实参**（gateway/WebSocketRoutes.scala
+ *     原 :208-239）；root 专属常量（depth=0 / parentRef=None / rootSessionId=sessionId
+ *     / actor 名 `agent-<sessionId>`）不入本面，硬编在 `spawnRootAgent` 内。
+ *   - 本面**不含** registry 注册 / rootAgents 缓存 / hook / AgentRecord —— 那些是
+ *     root 站点的独有动作，留在 WebSocketRoutes 原位置（与通用工厂分工一致）。
+ */
+object SharedResources:
+
+  /** root 会话 spawn 实参面（逐字段镜像 WebSocketRoutes 原直构点）。 */
+  final case class RootSpawnParams(
+    agentDef: AgentDef,
+    /** 根站点的 recordingWsSend（会话录制包装后的广播口）。 */
+    wsSend: Json => IO[Unit],
+    sessionId: String,
+    /** 原实参 = `metaOpt.map(_.name)`。 */
+    sessionName: Option[String],
+    /** 原实参 = `history`（`loadMessagesForSession`）。 */
+    initialMessages: List[Message],
+    /** 原实参 = 按会话 modelOverride 算出的上下文窗口（**非**全局 contextWindow）。 */
+    contextWindow: Int,
+    projectRoot: Option[String],
+    /** 原实参 = `resolvedRules`（folder 链继承规则）。 */
+    rulesMd: Option[String],
+    folderId: Option[String],
+    safetyMode: String,
+    /** 原实参 = `metaOpt.flatMap(_.gitBranch)`。 */
+    gitBranch: Option[String],
+    /** 原实参 = `agentDef.name == RootAgentIdentity.Name`。 */
+    sandboxEnabled: Boolean,
+    /** 原实参 = 阈值覆盖链（内存 Ref ＞ 盘上 SessionMeta ＞ 无覆盖）。 */
+    compactThresholdRatio: Option[Double],
+    /**
+     * 原 spawn 第二实参（actor 名），本面**原样**承载、工厂**零改写**：调用方传
+     * 字面 `s"agent-$sessionId"`（2026-09-28 审计 Finding-4：红线 6「字符串字面量
+     * 零改动」要求在调用点保留该字面原文，禁在工厂内改写成 `s"agent-${p.sessionId}"`）。
+     * 契约不变：actor 名 == `agent-<sessionId>`（`agentId == sessionId` 前缀形态）。
+     */
+    actorName: String
   )
 end SharedResources

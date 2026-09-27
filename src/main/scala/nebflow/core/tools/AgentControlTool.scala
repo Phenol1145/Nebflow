@@ -753,6 +753,20 @@ When to use:
             )
         }
       case None =>
+        // 2026-09-28 裁定（ORCH4-R3；口径 = `ORCH4-P2` 不可证等价须「保留原状 + 逐字并置注」）：本降级腿**不并入** ORCH4-R1 的共享体落点
+        // （agent/LifecycleEnds.scala），理由三条：① 跨包——并入须在本文件所在 core
+        // 侧新增窄 Face 端口面 + 启动注册点，属结构性新增接口而非收敛（端口机制已有
+        // 先例：DelegateBudgetPort，core/AgentRuntimePort.scala:201-222，故推迟不等于
+        // 搁置，实施成本低）；② 未注册路径的失败面必须与 HEAD 逐点等价，风险与
+        // 「行为保持」批的目标不匹配；③ 本腿四处真差异不满足本批「逐字同形」门槛：
+        // (i) `kind → source` 映射（紧随其后的 `val source = rec.kind match` 三岔）、
+        // (ii) Ephemeral 跳过 taskStore（下方 `rec.kind != AgentKind.Ephemeral` 判据）、(iii) 缺 hub 清槽（BackoffSupervisor
+        // 终态腿有 `cleanupPendingAsks`，本腿无）、(iv) 缺 `DelegateBudget.release`
+        // （BS 有，本腿无）；另注：本腿「注册表移除 → child Stop」的顺序与
+        // SessionChildCascade 无 supervisor 降级腿的「child Stop → 注册表移除」相反。
+        // 本批经逐行对照未发现可推翻上述四差异的证据。处置 = 登记为后续批次候选
+        // （B5 或用户拍板的独立批次）；台账原文另见 agent/LifecycleEnds.scala 对象 doc。
+        // 并置原注（下方「降级路径（spec §3.2 兜底）」两行）逐字保留，未改一字。
         // 降级路径（spec §3.2 兜底）：Ephemeral（bridge death-watch 兜底回收）或
         // 无 supervisor 记录的旧记录——直接 Stop + 自补通知 + registry 移除。
         val source = rec.kind match

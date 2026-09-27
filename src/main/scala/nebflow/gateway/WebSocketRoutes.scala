@@ -163,8 +163,12 @@ class WebSocketRoutes(
       history <- sharedResources.sessionStore.loadMessagesForSession(sessionId)
       metaOpt <- sharedResources.sessionStore.getSessionMeta(sessionId)
       agentDef <- resolveAgentDef(sessionId, metaOpt, sharedResources)
-      readTracker <- nebflow.shared.ReadTracker.create
-      fileHistory <- nebflow.shared.FileHistory.create()
+      // 2026-09-28 裁定（ORCH4-R4，T9-P1 收口；口径 = `ORCH4-P3`）：原两行
+      //   `readTracker <- nebflow.shared.ReadTracker.create`
+      //   `fileHistory <- nebflow.shared.FileHistory.create()`
+      // 随根构造改经 `sharedResources.spawnRootAgent` 一并收口——工厂在该两实参恒
+      // `Some(...)` 的路径内创建二者（镜像原站点两步，位置紧邻 spawn；`ReadTracker.create`
+      // 为纯 Ref 分配、`FileHistory.create()` 为幂等目录确保 ⇒ 与本处更早创建不可观测差异）。
       modelOverrides <- sharedResources.sessionModelOverrides.get
       contextWindow = modelOverrides.get(sessionId).map(_.contextWindow).getOrElse(sharedResources.contextWindow)
       // ── ctxthresh 批（2026-09-15 方案 A，作者卡答「按方案A实施」）─────────────
@@ -205,25 +209,32 @@ class WebSocketRoutes(
           id => sharedResources.sessionStore.getFolderParentId(id)
         )
       }.flatten
-      ref <- rootSystem.spawn(
-        AgentActor(
-          agentDef,
-          sharedResources,
-          recordingWsSend,
-          depth = 0,
-          parentRef = None,
-          sessionId = Some(sessionId),
+      // 2026-09-28 裁定（ORCH4-R4，T9-P1 收口；口径 = `ORCH4-P3`）：原 `rootSystem.spawn(AgentActor(...),
+      // s"agent-$sessionId")` 直构改为 root 专用工厂扩展方法 `spawnRootAgent`——实参
+      // **逐字段镜像**（agentDef / recordingWsSend / depth=0 / parentRef=None /
+      // sessionId+sessionName / history / contextWindow / projectRoot / resolvedRules /
+      // folderId / safetyMode / gitBranch / rootSessionId=sessionId / sandboxEnabled /
+      // compactThresholdRatio 全部按名对位；root 专属常量 depth/parentRef/rootSessionId
+      // 硬编于该工厂内）。registry 注册 + rootAgents 缓存 + SessionStart hook
+      // 三件事**仍在下方原位置**，不入工厂（与通用工厂分工一致）。
+      // ⚠ 2026-09-28 审计 Finding-4 订正：spawn 第二实参（actor 名）**不硬编**——
+      // 原字面 `s"agent-$sessionId"` 由本调用点原样传入（见下方 `actorName =`），
+      // 工厂零改写 ⇒ 满足红线 6「字符串字面量零改动」（先前的工厂内改写
+      // `s"agent-${p.sessionId}"` 已撤销：值虽同，字面文本被改仍属红线）。
+      ref <- sharedResources.spawnRootAgent(
+        rootSystem,
+        SharedResources.RootSpawnParams(
+          agentDef = agentDef,
+          wsSend = recordingWsSend,
+          sessionId = sessionId,
           sessionName = metaOpt.map(_.name),
           initialMessages = history,
-          readTracker = Some(readTracker),
-          fileHistory = Some(fileHistory),
           contextWindow = contextWindow,
           projectRoot = effectiveProjectRoot,
           rulesMd = resolvedRules,
           folderId = folderId,
           safetyMode = nebflow.core.SafetyMode.toString(effectiveMode),
           gitBranch = metaOpt.flatMap(_.gitBranch),
-          rootSessionId = sessionId,
           // Nebula 会话沙箱启用（2026-09-05 作者裁定 13:09）：写根=~/.nebflow
           // 数据根（root 特判在 AgentCore，按 SandboxPolicy.isNebulaRootSession
           // 取 PathUtil.dataRoot）。判定基准=WS 根会话 ∧ agent==Nebula——此处
@@ -231,11 +242,16 @@ class WebSocketRoutes(
           // （metaOpt.agentName 是可缺省的会话元数据）。其余 WS 根会话
           // （standalone 非 Nebula 聊天 / team Manager / flow 入口）保持
           // sandboxEnabled=false 现状零变化；沙箱 root 推导仍归 AgentCore。
+          // 2026-09-28 并置（ORCH4-R4）：本实参已随根构造改经 `spawnRootAgent`，
+          // 「此处」= 本调用点（唯一 depth=0 spawn 点），判据与取值**未改一字**；
+          // 工厂只做参数搬运，`agentDef.name == RootAgentIdentity.Name` 原式保留。
           sandboxEnabled = agentDef.name == RootAgentIdentity.Name,
           // ctxthresh 批：会话级压缩阈值比例覆盖（仅本 root spawn 注入，见上方注释）。
-          compactThresholdRatio = compactThresholdRatio
-        ),
-        s"agent-$sessionId"
+          compactThresholdRatio = compactThresholdRatio,
+          // 原 spawn 第二实参，**字面随迁**（审计 Finding-4）：此串自 HEAD :238 原样
+          // 保留，工厂以该值直投 `system.spawn(..., p.actorName)`，零改写。
+          actorName = s"agent-$sessionId"
+        )
       )
       pr = effectiveProjectRoot.getOrElse("")
       safetyMode = nebflow.core.SafetyMode.toString(effectiveMode)
