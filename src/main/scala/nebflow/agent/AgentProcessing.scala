@@ -281,6 +281,15 @@ private[agent] object AgentProcessing:
               // ② (2026-09-11): 真人输入不产注入气泡（fromUser 优先于 source）。
               // 2026-09-27 裁定（ORCH1-R3 待下批：帧字段与统一形态不可证等价
               // （MailTool 投递路径）——本腿缺 delivery）：保留原状，Battle-2 靶点。
+              // 2026-09-27 裁定（ORCH2-P5 定案，禁静默统一）：不可证等价已证毕——
+              // MailTool.sendMail（core/tools/MailTool.scala :2265-2283）构造
+              // ImmediateInput（delivery=Some("immediate")）经
+              // pendingImmediateInputs 入本腿可见域 ⇒ 并入统一形
+              // TurnBoundary.emitForImmediateInput 会给帧补 "delivery" 键
+              // （emitInjectedUserEvent 的 withDelivery deepMerge）⇒ 帧字节不等
+              // ⇒ 本批保留原状。下批方案（Battle-4 候选）：TurnBoundary 边界帧
+              // 画像实参（carryDelivery: Boolean，本腿 false/project 照带）或
+              // 命名 legacy 组装腿。
               _ <- immInputs.flatMap { imm =>
                 injectionSourceFor(imm.fromUser, imm.source).map(src =>
                   emitInjectedUserEvent(
@@ -732,47 +741,16 @@ private[agent] object AgentProcessing:
 
       // --- Interrupt ---
       case AgentCommand.Interrupt() =>
+        // 2026-09-27 裁定（ORCH2-P1）：与 AgentFrozen Interrupt 的公共段逐字同形
+        // ⇒ 改指 BehaviorCommon.interruptToIdle——compactui/R2 closure/
+        // markTeamIdle 英文注等随迁注释逐字并置共享方法体（一字不改、不删、不合并），
+        // log detail 字面量留案体，本站尾腿以 afterRegistry 实参显式参数化。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "interrupt", "reason=user")
-        for
-          _ <- ctx.cancelCurrentTurn()
-
-          _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-
-          // compactui 批（2026-09-15 事故，作者 16:45–16:48 实证）：压缩作业被中断
-          // 必须补发**终局帧**——否则客户端 pill 永挂、落盘孤儿 chat.compacting
-          // 每次历史重放复活。详见 emitAbandonedCompaction 文档。
-          _ <- emitAbandonedCompaction(state, depth)
-
-          _ <- state.pendingCompaction
-            .flatMap(_.replyDeferred)
-            .traverse_(d => d.complete(Left("Interrupted by user")).void.handleErrorWith(_ => IO.unit))
-          // Back to idle without finishing the turn — clear the busy mark so a
-          // interrupted team agent isn't stuck "running" in the Teams panel.
-          _ <- markTeamIdle(agentDef, state.sessionId)
-          // R2 closure (wait-timeout-fix): user cancel is the guaranteed exit
-          // from WaitingForUser (AskUser/permission parks the turn fiber on a
-          // deferred — no finishTurnCont runs). Without this touch the registry
-          // would keep the waiting status forever. Idle — NOT Processing — so
-          // the watcher sees a consistent idle row (also fixes the pre-existing
-          // stale-Processing-after-interrupt gap).
-          _ <- touchRegistryActivity(resources, state.sessionId, AgentStatus.Idle)
+        BehaviorCommon.interruptToIdle(agentDef, resources, depth, parentRef, state)(
           // #250 第②项（2026-09-13 作者裁定「6 项全补」）：turn 被中断 ⇒ 回收本会话
           // 仍挂在 InteractionHub 的 pending 槽（中断前那一问已无人等待）。
-          _ <- closePendingInteractionsForInterruptedTurn(resources, state.sessionId.getOrElse(""))
-        yield
-          // Hard-recovery P3: cancelCurrentTurn is now fire-and-forget — the
-          // abandoned turn fiber may still complete and send a late
-          // LlmComplete/LlmFailed. Bump currentTurnId so the stale-turnId
-          // guard discards them (turnId is monotonic; the next dispatch takes
-          // +1 from here with no collision — AgentCore.pipeLlmCall 的
-          // `currentTurnId + 1` 取号处；2026-09-25 行号引用修正)。
-          // compactui 批（2026-09-15 事故 ②）：dropCompactionScratch 必须在
-          // withPendingCompaction(None) **之前**应用（判据依赖作业仍在）。
-          val interruptedState = dropCompactionScratch(state).resetForInterrupt
-            .withCurrentTurnId(state.execution.currentTurnId + 1)
-            .withPendingCompaction(None)
-          idle(agentDef, resources, depth, parentRef, interruptedState)
-        end for
+          closePendingInteractionsForInterruptedTurn(resources, state.sessionId.getOrElse(""))
+        )
 
       // --- Retry: cancel current work, re-dispatch from last checkpoint ---
       // F (2026-09-25 命令消重): 与 frozen 态逐字同形,收敛至
@@ -782,36 +760,22 @@ private[agent] object AgentProcessing:
 
       // --- Supervisor restart ---
       case AgentCommand.RestartAgent(level) =>
+        // 2026-09-27 裁定（ORCH2-P1 · P2 升级裁定）：与 AgentFrozen RestartAgent 除末端 dispatch
+        // 状态变换外逐字同形 ⇒ 改指 BehaviorCommon.restartAgentCore；本站差异
+        // （restartState.withNextLoopTurn = 新 loop 纪元）以 dispatchState 实参
+        // 显式参数化，log detail 字面量留案体。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "restart", s"level=${level.toString}")
-        for
-          _ <- ctx.cancelCurrentTurn()
-          _ <- state.pendingCompaction
-            .flatMap(_.replyDeferred)
-            .traverse_(d => d.complete(Left("Restarted by supervisor")).void.handleErrorWith(_ => IO.unit))
-          _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-          restartState <- restartStateFor(level, state, resources)
-          _ <- state
-            .wsSend(
-              Json.obj(
-                "type" -> "agentRestarted".asJson,
-                "sessionId" -> state.sessionId.asJson,
-                "level" -> level.toString.asJson
-              )
-            )
-            .handleErrorWith(_ => IO.unit)
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, restartState.withNextLoopTurn, None)
-        yield result
-        end for
+        BehaviorCommon.restartAgentCore(agentDef, resources, depth, parentRef, state, level)(
+          _.withNextLoopTurn
+        )
 
       // --- Stop ---
       case AgentCommand.Stop(_) =>
+        // 2026-09-27 裁定（ORCH2-P1）：三态 Stop 公共序列收口
+        // BehaviorCommon.stopSequence；本态无 registry 中间腿 ⇒ IO.unit 恒值
+        // 实参（参数化退化形态，行为逐字不变），log detail 字面量留案体。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "stop", "reason=user")
-        for
-          _ <- ctx.cancelCurrentTurn()
-
-          _ <- killSessionShellProcesses(state)
-          _ <- fireLifecycleStopHooks(resources, state)
-        yield Behaviors.stopped
+        BehaviorCommon.stopSequence(resources, state)(IO.unit)
 
       case AgentCommand.ClearReadTracker =>
         clearReadTrackerStay(state)(IO.pure(processing(agentDef, resources, depth, parentRef, state, pending)))
@@ -822,6 +786,9 @@ private[agent] object AgentProcessing:
         resetSessionHandler(agentDef, resources, depth, parentRef, state)
 
       // --- Compaction completed ---
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态为真压缩收尾面（归档/
+      // 播报/drain/续跑），与 idle、frozen 的 stale 兜底腿（本批已收口
+      // BehaviorCommon.staleCompactionDiscard）不同形 ⇒ 整站留。
       case AgentCommand.CompactionComplete(result) =>
         if state.pendingCompaction.isEmpty then
           IO.pure(processing(agentDef, resources, depth, parentRef, state, pending))
@@ -1028,6 +995,10 @@ private[agent] object AgentProcessing:
         forwardBackgroundTaskNotification(n)(IO.pure(processing(agentDef, resources, depth, parentRef, state, pending)))
 
       // --- External event while processing ---
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 = 排队 + 收件气泡 +
+      // persistQueues，与 idle 的 barrier 注入三腿、frozen 的静默排队为真语义
+      // 差异 ⇒ 整站留；同形面（入队 + barrier 递减 = ORCH1-R8、收件气泡腿 =
+      // ORCH1-R2）已于上批单点。
       case AgentCommand.ExternalEvent(source, eventType, payload, metadata, correlationId) =>
         logAgentEvent(
           agentDef,
@@ -1188,6 +1159,9 @@ private[agent] object AgentProcessing:
         )
 
       // --- Buffer user-initiated messages during processing ---
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本族缓冲腿（UserInput/
+      // SkillActivate/AskQuestion ⇒ TurnBoundary.enqueueUserInput）与 idle 直投
+      // 开轮、frozen 唤醒/排队腿真语义差异 ⇒ 整站留（入队面已 ORCH1-R8 单点）。
       // Stored in ExecutionContext.pendingUserInputs (not the dead-end `pending`
       // parameter) so they are drained at the next turn boundary — the head is
       // re-sent to self and processed by the idle handler with full metadata.
@@ -1211,6 +1185,9 @@ private[agent] object AgentProcessing:
       case msg: AgentCommand.AskQuestion =>
         val updatedExec = TurnBoundary.enqueueUserInput(state.execution, msg)
         IO.pure(processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending))
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态排队腿与 frozen 排队腿
+      // 同形除 persistQueues（F2 快照纪律：processing 边界即时落盘，frozen 段
+      // 冻结前已持久化）——真语义差异 ⇒ 整站留（入队面已 ORCH1-R8 单点）。
       case msg: AgentCommand.ImmediateInput =>
         logAgentEvent(
           agentDef,
@@ -1229,6 +1206,9 @@ private[agent] object AgentProcessing:
 
       // Queued mail arriving while busy — just count; actual content is on disk
       case AgentCommand.MailQueued(item, _) =>
+        // 2026-09-27 裁定（ORCH2-P1）：计数腿与 AgentFrozen 逐字同形 ⇒ 改指
+        // BehaviorCommon.mailQueuedCountUp（累加不钳制，#10 mail-queue wedge
+        // 语义在共享方法体注记随迁），log 与回本态构造留案体。
         logAgentEvent(
           agentDef,
           depth,
@@ -1237,10 +1217,7 @@ private[agent] object AgentProcessing:
           "mail-queued",
           s"from=${item.from} pendingCount=${state.execution.pendingMailQueueCount + 1}"
         )
-        val updatedExec = state.execution.copy(
-          pendingMailQueueCount = state.execution.pendingMailQueueCount + 1
-        )
-        IO.pure(processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending))
+        IO.pure(processing(agentDef, resources, depth, parentRef, BehaviorCommon.mailQueuedCountUp(state), pending))
 
       // --- Session management (persistent sub-agents) ---
       case AgentCommand.SessionStarted(address, agentName, taskDescription) =>

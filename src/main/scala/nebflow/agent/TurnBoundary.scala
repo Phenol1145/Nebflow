@@ -208,9 +208,7 @@ private[agent] object TurnBoundary:
     else if sid.startsWith("dag-") then Some("flow")
     else Some("tool")
 
-  /**
-   * 2026-09-27 裁定（ORCH1-R5）：AgentIdle UserInput 直投腿的判源收口。
-   */
+  /** 2026-09-27 裁定（ORCH1-R5）：AgentIdle UserInput 直投腿的判源收口。 */
   private[agent] def userInputInjectionSource(
     clientMessageId: Option[String],
     fromUser: Boolean,
@@ -227,7 +225,7 @@ private[agent] object TurnBoundary:
 
   /**
    * 2026-09-27 裁定（ORCH1-R8）：pendingUserInputs 入队单点
-   *（AgentProcessing UserInput/SkillActivate/AskQuestion 三缓冲腿、
+   * （AgentProcessing UserInput/SkillActivate/AskQuestion 三缓冲腿、
    * AgentFrozen 系统注入排队腿改指；追加语义 `:+` 随迁）。
    */
   private[agent] def enqueueUserInput(exec: ExecutionContext, cmd: AgentCommand): ExecutionContext =
@@ -235,7 +233,7 @@ private[agent] object TurnBoundary:
 
   /**
    * 2026-09-27 裁定（ORCH1-R8）：pendingImmediateInputs 入队单点
-   *（AgentProcessing 入队腿、AgentFrozen 排队腿改指）。
+   * （AgentProcessing 入队腿、AgentFrozen 排队腿改指）。
    */
   private[agent] def enqueueImmediateInput(
     exec: ExecutionContext,
@@ -304,7 +302,7 @@ private[agent] object TurnBoundary:
    * 2026-09-27 裁定（ORCH1-R8）：turn 边界 ExecutionContext.idle 重建 + 三队列
    * 跨边界携带单点——**全携带默认**（events/imms/users/outstanding/mailCount
    * 默认从 exec 原样带过），已消费侧与 owedCompletion 以显式覆盖参数传入
-   *（2026-09-27 门禁修复：默认参数不得引用同列表前置参数——E006——
+   * （2026-09-27 门禁修复：默认参数不得引用同列表前置参数——E006——
    * owedCompletion 改 Option 覆盖形，None ⇒ exec 原样带过，语义不变）。
    * 本批仅 AgentProcessing recoverable-abort 腿接入（无站点专属注释冲突）；
    * AgentFinishTurn 三注入腿各自带站点级日期裁定注释 ⇒ ORCH1-R8 待下批。
@@ -438,5 +436,81 @@ private[agent] object TurnBoundary:
       state.execution.pendingImmediateInputs,
       compactionPending = false
     )
+
+  // ============================================================
+  // 完成判定归口（ORCH2-P4）—— turn 完成协作的**纯判定**单点；
+  // 写入面（TeamSessionRegistry.markBusy/markIdle、AgentRegistryEmit
+  // 的 modify 本体）与既有唯一实现（MailIdleGate.isAgentTreeIdle 调用面、
+  // AgentFinishTurn.fullyIdle 的 IO 取数面）不动；fullyIdle 的组合判定经
+  // 门禁审计定案收口本节 mailDrainGateIdle——本节零 core 引用（本对象
+  // 原有 agent→core 包边数不变：门禁包边预算仅允许 →shared/→actor）。
+  // 判定皆为纯函数——不触本对象头注的事件总线挂点纪律（禁分发/回调）。
+  // ============================================================
+
+  /**
+   * 2026-09-27 裁定（ORCH2-P4）：markTeamBusy/markTeamIdle 的判定条件收口
+   * （原形 = agentDef.category == "team" 门 + sid 存在性折叠，真值表逐字
+   * 等价）；两方法的写入体与 AgentActor 委托面零触碰。
+   */
+  private[agent] def teamMarkEligible(agentDef: AgentDef, sid: Option[String]): Boolean =
+    agentDef.category == "team" && sid.nonEmpty
+
+  /**
+   * 2026-09-27 裁定（ORCH2-P4）：touchRegistryActivity 的 turn 起点相位判定
+   * 收口本纯函数；AgentRegistryEmit 的 modify 写入本体（唯一写面）其余逐字
+   * 不动。原站点判定注释逐字随迁下行。
+   */
+  // turn 起点：仅当本会话此前不在 Processing（WaitingForUser 是同一
+  // turn 内的人机交互子态，不算新 turn 起点）。
+  private[agent] def isTurnStartTransition(prevStatus: AgentStatus, turnStart: Boolean): Boolean =
+    turnStart && prevStatus != AgentStatus.Processing && prevStatus != AgentStatus.WaitingForUser
+
+  /**
+   * 2026-09-27 裁定（ORCH2-P4）：「离开 Processing 一律清工具相位」判定单点
+   * （2026-09-10 卡死判据换轴的方法级语义注留守 AgentRegistryEmit 头注）。
+   */
+  private[agent] def keepsToolPhase(status: AgentStatus): Boolean =
+    status == AgentStatus.Processing
+
+  /**
+   * 2026-09-27 裁定（ORCH2-P4）：finishTurnCont 完成债三要素判定收口（原
+   * AgentFinishTurn 的 completionTargets / subagentsInFlight / owedAfter 三
+   * val 逐字等价，#25 裁定块随迁下行，站点留指向注）。返回
+   * (completionTargets, subagentsInFlight, owedAfter)。
+   */
+  // #25 (nested delegation dead-letter): "turn ended" is NOT "task completed"
+  // while spawned sub-agents are still in flight. The completion notification
+  // (supervisor adapter / ask fork / flow bridge) is PARKED in
+  // execution.owedCompletion instead of being sent — BackoffSupervisor would
+  // otherwise stop this actor on Completed and the grandchildren's results
+  // would dead-letter. When a later turn ends with the barrier at 0, every
+  // parked target receives the Completed event carrying the FINAL synthesized
+  // text and the debt clears. Root agents (replyTo=None, no debt) unaffected.
+  private[agent] def turnEndCompletionDebt(
+    replyTo: Option[ActorRef[AgentEvent]],
+    exec: ExecutionContext
+  ): (List[ActorRef[AgentEvent]], Boolean, List[ActorRef[AgentEvent]]) =
+    val completionTargets: List[ActorRef[AgentEvent]] = (replyTo.toList ++ exec.owedCompletion).distinct
+    val subagentsInFlight = exec.outstandingSubagentResults > 0
+    val owedAfter: List[ActorRef[AgentEvent]] = if subagentsInFlight then completionTargets else Nil
+    (completionTargets, subagentsInFlight, owedAfter)
+
+  /**
+   * 2026-09-27 裁定（ORCH2-P4，经门禁审计定案补做；同轮按门禁包边记账反馈修复）：
+   * #407 mail-queue 空闲 gate 投递判定（fullyIdle 的判定条件）收口本纯函数——
+   * internalIdle（agent 内部权威 barrier，registry 快照之外的一层防御，行注逐字
+   * 随迁）与树空闲实参 treeIdle（= MailIdleGate.isAgentTreeIdle 既有唯一实现的
+   * 调用结果——调用与数据取数留守 AgentFinishTurn.fullyIdle 站点：该站点本已
+   * 持有 agent→core 包边，本对象**不因归口新增 core 引用**，本批包边预算仅
+   * 允许 →shared/→actor 记账增长）的 && 组合序原样（selfOk && internalIdle）；
+   * skipSelfStatus→checkStatus 取反语义（turn 已结束时自身 status 为 Processing
+   * 残留、不算忙——2026-08-28 01:00 统一裁定注原样留守 AgentFinishTurn 站点）
+   * 随调用点实参保持。纯 Boolean 组合，无副作用/短路可观测差异 ⇒ 行为逐字不变；
+   * 委托链 AgentActor.fullyIdle 零触碰，无转发 shim。
+   */
+  private[agent] def mailDrainGateIdle(treeIdle: Boolean, state: AgentState): Boolean =
+    // agent 内部权威 barrier（registry 快照之外的一层防御）
+    val internalIdle = state.execution.outstandingSubagentResults == 0
+    treeIdle && internalIdle
 
 end TurnBoundary

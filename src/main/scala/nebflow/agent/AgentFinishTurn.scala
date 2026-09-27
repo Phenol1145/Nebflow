@@ -230,18 +230,12 @@ private[agent] object AgentFinishTurn:
       s"msgs=${state.messages.size} textLen=${text.length} textStreamed=$textStreamed " +
         s"thinking=${thinking.map(_.length).getOrElse(0)} model=${model.getOrElse("-")}"
     )
-    // #25 (nested delegation dead-letter): "turn ended" is NOT "task completed"
-    // while spawned sub-agents are still in flight. The completion notification
-    // (supervisor adapter / ask fork / flow bridge) is PARKED in
-    // execution.owedCompletion instead of being sent — BackoffSupervisor would
-    // otherwise stop this actor on Completed and the grandchildren's results
-    // would dead-letter. When a later turn ends with the barrier at 0, every
-    // parked target receives the Completed event carrying the FINAL synthesized
-    // text and the debt clears. Root agents (replyTo=None, no debt) unaffected.
-    val completionTargets: List[ActorRef[AgentEvent]] =
-      (replyTo.toList ++ state.execution.owedCompletion).distinct
-    val subagentsInFlight = state.execution.outstandingSubagentResults > 0
-    val owedAfter: List[ActorRef[AgentEvent]] = if subagentsInFlight then completionTargets else Nil
+    // 2026-09-27 裁定（ORCH2-P4）：完成债三要素判定（completionTargets /
+    // subagentsInFlight / owedAfter）收口 TurnBoundary.turnEndCompletionDebt
+    // ——#25 (nested delegation dead-letter) 裁定块随实现迁至该方法体（逐字
+    // 未动），本站点指向；下方各消费点三值语义逐字不变。
+    val (completionTargets, subagentsInFlight, owedAfter) =
+      TurnBoundary.turnEndCompletionDebt(replyTo, state.execution)
 
     // #407: turn 收尾回 idle（原 else 分支提取）。queue drain 分支的 idle-gate
     // 拦截也复用此收尾——queue 延迟投递但本 turn 正常结束（Done/持久化/debt
@@ -492,6 +486,16 @@ private[agent] object AgentFinishTurn:
         // 2026-09-27 裁定（ORCH1-R3 待下批：帧字段与统一形态不可证等价
         // （MailTool 投递路径）——本腿缺 delivery/project/sessionProject）：
         // 保留原状，Battle-2 靶点。
+        // 2026-09-27 裁定（ORCH2-P5 定案，禁静默统一）：不可证等价已证毕——
+        // MailTool.sendMail（core/tools/MailTool.scala :2265-2283）构造
+        // ImmediateInput（delivery=Some("immediate")、project=ctx.projectName
+        // 可 Some）经 pendingImmediateInputs 入本腿可见域 ⇒ 并入统一形
+        // TurnBoundary.emitForImmediateInput 会给帧补 "delivery" 键
+        // （emitInjectedUserEvent 的 withDelivery deepMerge）并改 PROJECT 段
+        // header ⇒ 帧字节不等 ⇒ 本批保留原状。下批方案（Battle-4 候选）：在
+        // TurnBoundary 增设边界帧画像实参（carryDelivery/carryProject:
+        // Boolean）或命名 legacy 组装腿，把本调用面组装收进 TurnBoundary 而
+        // 字段省略逐站显式。
         _ <- immInputs.flatMap { imm =>
           injectionSourceFor(imm.fromUser, imm.source).map(src =>
             emitInjectedUserEvent(
@@ -686,12 +690,18 @@ private[agent] object AgentFinishTurn:
    * Errors are swallowed: a failed status record must never break the turn.
    */
   private[agent] def markTeamBusy(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    if agentDef.category == "team" then
+    // 2026-09-27 裁定（ORCH2-P4）：判定条件收口 TurnBoundary.teamMarkEligible
+    // （category=="team" 门 + sid 存在性折叠，真值表与原 if+fold 逐字等价）；
+    // 写入面（TeamSessionRegistry.markBusy + 错误吞）不动。
+    if TurnBoundary.teamMarkEligible(agentDef, sid) then
       sid.fold(IO.unit)(s => TeamSessionRegistry.markBusy(s).handleErrorWith(_ => IO.unit))
     else IO.unit
 
   private[agent] def markTeamIdle(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    if agentDef.category == "team" then
+    // 2026-09-27 裁定（ORCH2-P4）：判定条件收口 TurnBoundary.teamMarkEligible
+    // （与 markTeamBusy 同判据单点）；写入面（TeamSessionRegistry.markIdle +
+    // 错误吞）不动。
+    if TurnBoundary.teamMarkEligible(agentDef, sid) then
       sid.fold(IO.unit)(s => TeamSessionRegistry.markIdle(s).handleErrorWith(_ => IO.unit))
     else IO.unit
 
@@ -706,6 +716,15 @@ private[agent] object AgentFinishTurn:
    * 无关**——废除 08-25 按发送者区分（root→全 team 停）的语义：无关成员的忙碌
    * 不再无限期扣住投递（旧 senderIsRoot 分支连同 isTeamTreeIdle 一并退役）。
    */
+  // 2026-09-27 裁定（ORCH2-P4 判定归口，经门禁审计定案补做；同轮按门禁包边
+  // 记账反馈修复）：本方法的 internalIdle + && 组合判定收口
+  // TurnBoundary.mailDrainGateIdle（纯 Boolean 函数）；树空闲调用
+  // （MailIdleGate.isAgentTreeIdle 既有唯一实现，checkStatus =
+  // !skipSelfStatus 取反语义，2026-08-28 01:00 统一裁定见上方 scaladoc）
+  // 留守本站点——本站点本已持有 agent→core 包边，归口侧不因此新增 core
+  // 引用（本批包边预算仅允许 →shared/→actor 记账增长）；本方法两枚 IO
+  // 取数 registry / RunningFlowRegistry.list = 既有唯一实现本体不动
+  // （委托链 AgentActor.fullyIdle 零触碰，无转发 shim）。
   private[agent] def fullyIdle(
     sid: String,
     state: AgentState,
@@ -715,10 +734,10 @@ private[agent] object AgentFinishTurn:
     for
       registry <- resources.agentRegistry.get
       flows <- nebflow.core.flow.RunningFlowRegistry.list
-      // agent 内部权威 barrier（registry 快照之外的一层防御）
-      internalIdle = state.execution.outstandingSubagentResults == 0
-      selfOk = nebflow.core.flow.MailIdleGate.isAgentTreeIdle(sid, registry, flows, checkStatus = !skipSelfStatus)
-    yield selfOk && internalIdle
+    yield TurnBoundary.mailDrainGateIdle(
+      nebflow.core.flow.MailIdleGate.isAgentTreeIdle(sid, registry, flows, checkStatus = !skipSelfStatus),
+      state
+    )
 
   /** Emit a WS event so the frontend removes a pending mail-queue item. */
   private[agent] def emitDequeuedWs(wsSend: Json => IO[Unit], sessionId: String, itemId: String): IO[Unit] =

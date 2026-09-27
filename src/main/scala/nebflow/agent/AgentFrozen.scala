@@ -229,6 +229,9 @@ private[agent] object AgentFrozen:
             end if
         end match
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 UserInput = 用户唤醒
+      // （clientMessageId 守卫分叉：唤醒 Resumed 链 vs 排队不唤醒），与 idle
+      // 直投开轮真语义差异 ⇒ 整站留（相同碎片量过小，不提取）。
       case AgentCommand.UserInput(
             text,
             replyTo2,
@@ -320,6 +323,9 @@ private[agent] object AgentFrozen:
             frozen(agentDef, resources, depth, parentRef, queued, replyTo, resumeAt, reason, retryCount, escalation)
           )
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 AskQuestion = 冻结唤醒
+      // （Resumed 帧 + frozenReason 清位 + resetCrossTurn 观察窗重启），idle 态
+      // 无这三腿——真语义差异 ⇒ 整站留。
       case AgentCommand.AskQuestion(question, _) =>
         // 用户动作（D2）：唤醒——ask 轮本身也是 gate 豁免路径（askMode.isDefined）。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "freeze-wake", s"ask=${question.take(60)}")
@@ -346,6 +352,9 @@ private[agent] object AgentFrozen:
             pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
         }
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 SkillActivate = 冻结唤醒
+      // （Resumed 链 + resetCrossTurn），idle 态为 sessionBusyIO 直投——发射腿
+      // 已 ORCH1-R1 归口 TurnBoundary.emitForSkill，剩余量过小 ⇒ 整站留。
       case AgentCommand.SkillActivate(skillName, input, _, skillContent, _) =>
         // 用户动作（D2）：唤醒（镜像 idle 的 SkillActivate handler）。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "freeze-wake", s"skill=$skillName")
@@ -382,70 +391,36 @@ private[agent] object AgentFrozen:
       case AgentCommand.Interrupt() =>
         // D10 放弃续跑：与 processing 的 Interrupt 同语义（cancelCurrentTurn +
         // Interrupted 事件 + idle，历史含工具结果保留）。
+        // 2026-09-27 裁定（ORCH2-P1）：公共段与 AgentProcessing Interrupt 逐字同形 ⇒
+        // 改指 BehaviorCommon.interruptToIdle——compactui/frozen 专属 registry 退回
+        // Idle 等随迁注释逐字并置共享方法体（一字不改、不删、不合并），log detail 字面量
+        // 留案体，本站尾腿（registry frozenReason 清位）以 afterRegistry 实参
+        // 显式参数化。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "interrupt", "reason=user-during-frozen")
-        for
-          _ <- ctx.cancelCurrentTurn()
-
-          _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-
-          // compactui 批（2026-09-15 事故）：与 processing 的 Interrupt 同款终局帧
-          // （此处原先同样只清 pendingCompaction 不发帧）。
-          _ <- emitAbandonedCompaction(state, depth)
-
-          _ <- state.pendingCompaction
-            .flatMap(_.replyDeferred)
-            .traverse_(d => d.complete(Left("Interrupted by user")).void.handleErrorWith(_ => IO.unit))
-          // Back to idle without resuming — clear the team busy mark so a
-          // frozen-then-interrupted team agent isn't stuck "running".
-          _ <- markTeamIdle(agentDef, state.sessionId)
-          // frozen 专属：registry 退回 Idle——否则 FreezeScheduler 会持续 ping
-          // 一个已回 idle 的 agent（无害但浪费，且面板显示错误）。
-          _ <- touchRegistryActivity(resources, state.sessionId, AgentStatus.Idle)
-          _ <- updateRegistryFrozenReason(resources, state.sessionId, None)
-        yield
-          // Hard-recovery P3: same stale-turnId bump as the processing-state
-          // Interrupt — fire-and-forget cancel admits late turn results.
-          // compactui 批（2026-09-15 事故 ②）：同 processing 面，摘压缩轮临时输入。
-          val interruptedState = dropCompactionScratch(state).resetForInterrupt
-            .withCurrentTurnId(state.execution.currentTurnId + 1)
-            .withPendingCompaction(None)
-          idle(agentDef, resources, depth, parentRef, interruptedState)
-        end for
+        BehaviorCommon.interruptToIdle(agentDef, resources, depth, parentRef, state)(
+          updateRegistryFrozenReason(resources, state.sessionId, None)
+        )
 
       case AgentCommand.Stop(_) =>
+        // 2026-09-27 裁定（ORCH2-P1）：三态 Stop 公共序列收口
+        // BehaviorCommon.stopSequence；本态两枚 registry 腿（退回 Idle——否则
+        // FreezeScheduler 持续 ping——并清 frozenReason）作为 betweenKillAndHooks
+        // 实参显式参数化，log detail 字面量留案体，语义逐字不变。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "stop", "reason=user-during-frozen")
-        for
-          _ <- ctx.cancelCurrentTurn()
-
-          _ <- killSessionShellProcesses(state)
-          _ <- touchRegistryActivity(resources, state.sessionId, AgentStatus.Idle)
-          _ <- updateRegistryFrozenReason(resources, state.sessionId, None)
-          _ <- fireLifecycleStopHooks(resources, state)
-        yield Behaviors.stopped
+        BehaviorCommon.stopSequence(resources, state)(
+          touchRegistryActivity(resources, state.sessionId, AgentStatus.Idle) *>
+            updateRegistryFrozenReason(resources, state.sessionId, None)
+        )
 
       case AgentCommand.RestartAgent(level) =>
         // 镜像 processing 的 RestartAgent；末尾 dispatch 是系统动作（Gated）——
         // 冻结时段再次进入 frozen（正确语义：supervisor 重启不唤醒）。
+        // 2026-09-27 裁定（ORCH2-P1 · P2 升级裁定）：公共段与 AgentProcessing RestartAgent 逐字
+        // 同形 ⇒ 改指 BehaviorCommon.restartAgentCore；本态 dispatchState =
+        // identity（**不**刷新 loop 纪元——本注释所述冻结语义的一部分，与
+        // processing 之 _.withNextLoopTurn 相对，差异显式参数化）。
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "restart", s"level=${level.toString}")
-        for
-          _ <- ctx.cancelCurrentTurn()
-          _ <- state.pendingCompaction
-            .flatMap(_.replyDeferred)
-            .traverse_(d => d.complete(Left("Restarted by supervisor")).void.handleErrorWith(_ => IO.unit))
-          _ <- emitStream(state.wsSend, AgentStreamEvent.Interrupted, isSubagent = depth > 0, state.sessionId)
-          restartState <- restartStateFor(level, state, resources)
-          _ <- state
-            .wsSend(
-              Json.obj(
-                "type" -> "agentRestarted".asJson,
-                "sessionId" -> state.sessionId.asJson,
-                "level" -> level.toString.asJson
-              )
-            )
-            .handleErrorWith(_ => IO.unit)
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, restartState, None)
-        yield result
-        end for
+        BehaviorCommon.restartAgentCore(agentDef, resources, depth, parentRef, state, level)(identity)
 
       case AgentCommand.Retry(reason) =>
         // 镜像 processing 的 Retry：从 checkpoint 重派——Gated，冻结时段再次冻结
@@ -540,6 +515,10 @@ private[agent] object AgentFrozen:
           )
         end for
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 ExternalEvent = 静默排队
+      // （零 token 铁律，不出气泡不 persist），processing 态带收件气泡 +
+      // persistQueues、idle 态 barrier 注入开轮——真语义差异 ⇒ 整站留；入队 +
+      // barrier 递减已 ORCH1-R8 单点。
       case AgentCommand.ExternalEvent(source, eventType, payload, metadata, correlationId) =>
         // 排队 pendingEvents（不唤醒）：出冻结段/唤醒后的下一个 turn 边界
         // （ToolsComplete → drainBarrier）统一注入。barrier 计数语义镜像 idle
@@ -562,6 +541,9 @@ private[agent] object AgentFrozen:
           frozen(agentDef, resources, depth, parentRef, queued, replyTo, resumeAt, reason, retryCount, escalation)
         )
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态排队腿与 processing 同形
+      // 除 persistQueues（F2 快照纪律，与 processing 侧注记配对）——真语义差异
+      // ⇒ 整站留（入队面已 ORCH1-R8 单点）。
       case msg: AgentCommand.ImmediateInput =>
         // 排队 pendingImmediateInputs（不唤醒）——恢复后的 turn 边界 drain。
         logAgentEvent(
@@ -581,6 +563,8 @@ private[agent] object AgentFrozen:
 
       case AgentCommand.MailQueued(item, _) =>
         // 镜像 processing：计数 +1，实际内容在磁盘（MailQueueStore）。
+        // 2026-09-27 裁定（ORCH2-P1）：计数腿与 AgentProcessing 逐字同形 ⇒ 改指
+        // BehaviorCommon.mailQueuedCountUp，log 与回本态构造留案体。
         logAgentEvent(
           agentDef,
           depth,
@@ -589,11 +573,19 @@ private[agent] object AgentFrozen:
           "mail-queued",
           s"from=${item.from} pendingCount=${state.execution.pendingMailQueueCount + 1}"
         )
-        val queued = state.copy(execution =
-          state.execution.copy(pendingMailQueueCount = state.execution.pendingMailQueueCount + 1)
-        )
         IO.pure(
-          frozen(agentDef, resources, depth, parentRef, queued, replyTo, resumeAt, reason, retryCount, escalation)
+          frozen(
+            agentDef,
+            resources,
+            depth,
+            parentRef,
+            BehaviorCommon.mailQueuedCountUp(state),
+            replyTo,
+            resumeAt,
+            reason,
+            retryCount,
+            escalation
+          )
         )
 
       // 2026-09-13（permshield S1）：`SetSafetyMode` 已退役（见 idle 分支注释），
@@ -653,51 +645,20 @@ private[agent] object AgentFrozen:
         // stale 压缩结果：frozen 不可能由压缩轮直接进入（压缩 dispatch 在
         // super 内部静态解析，进入 frozen 前已完成）。镜像 idle 的兜底——完成
         // deferred 防等待方悬空，结果本身丢弃。
-        logAgentEvent(
+        // 2026-09-27 裁定（ORCH2-P1）：stale 兜底公共段与 AgentIdle 逐字同形 ⇒
+        // 改指 BehaviorCommon.staleCompactionDiscard；deferred 结算文案字面量原样
+        // 留案体作实参，本态 Some 腿清 pendingCompaction（与 idle 之设计差）以
+        // clearPendingCompaction=true 显式参数化，回本态构造以 stay 续参注入。
+        BehaviorCommon.staleCompactionDiscard(
           agentDef,
           depth,
-          state.sessionId,
-          state.sessionName,
-          "stale-compaction-discarded",
-          result.fold(err => s"err=${err.take(60)}", msgs => s"ok=${msgs.size}msgs")
+          state,
+          result,
+          "Compaction result arrived while agent was frozen",
+          clearPendingCompaction = true
+        )(s =>
+          IO.pure(frozen(agentDef, resources, depth, parentRef, s, replyTo, resumeAt, reason, retryCount, escalation))
         )
-        val staleState = state.invalidateSystemStableCache
-        state.pendingCompaction.flatMap(_.replyDeferred) match
-          case Some(d) =>
-            ctx.forkTurn(
-              d.complete(Left("Compaction result arrived while agent was frozen"))
-                .void
-                .handleErrorWith(_ => IO.unit)
-            ) *> IO.pure(
-              frozen(
-                agentDef,
-                resources,
-                depth,
-                parentRef,
-                staleState.withPendingCompaction(None),
-                replyTo,
-                resumeAt,
-                reason,
-                retryCount,
-                escalation
-              )
-            )
-          case None =>
-            IO.pure(
-              frozen(
-                agentDef,
-                resources,
-                depth,
-                parentRef,
-                staleState,
-                replyTo,
-                resumeAt,
-                reason,
-                retryCount,
-                escalation
-              )
-            )
-        end match
 
       case AgentCommand.ClearReadTracker =>
         clearReadTrackerStay(state)(

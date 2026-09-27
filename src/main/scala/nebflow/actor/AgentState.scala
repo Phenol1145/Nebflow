@@ -1104,42 +1104,56 @@ extension (s: AgentState)
   // pendingImmediateInputs/pendingUserInputs，resetForInterrupt 带 imm 不带 user，
   // 与 TurnBoundary.withCarriedQueues/toIdle 默认形不可逐字合并 ⇒ Battle-2 随
   // T5/T6 处置）——本批留 actor 包原地不动、不删、不改签名（纯注释，零代码耦合）。
+  // 2026-09-27 裁定（ORCH2-P6 定案）：统一落 actor 包、参数化携带面——共享体
+  // resetCarriedExecution（本 extension 组下方私有单点），carryImmediateInputs
+  // 显式化两法唯一执行面差集（false ⇒ pendingImmediateInputs 不携=idle 工厂
+  // 默认 Nil，逐字等价）；本方法=（carryImmediateInputs=false，compaction
+  // 不碰）。公开名与签名语义逐字保留，调用点零改动。
   def resetToIdle(messages: List[Message], turnIdx: Int = s.execution.turnIdx): AgentState =
-    s.copy(execution =
-      ExecutionContext
-        .idle(messages, turnIdx, s.execution.currentTurnId)
-        // Sub-agent barrier: already-received results held for batch delivery are
-        // still due to the agent — survive the reset (the workers keep running).
-        .copy(
-          pendingEvents = s.execution.pendingEvents,
-          outstandingSubagentResults = s.execution.outstandingSubagentResults,
-          // #25: a parked completion notification is still owed — the
-          // supervisor/bridge is still waiting for the final answer.
-          owedCompletion = s.execution.owedCompletion
-        )
-    )
+    resetCarriedExecution(s, messages, turnIdx, carryImmediateInputs = false)
 
   // 2026-09-27 裁定（ORCH1-R9 待下批：与 resetForInterrupt 携带子集不同——本
   // 方法不带 imm/user，resetForInterrupt 带 imm 不带 user——归 Battle-2 随
   // T5/T6 处置；本批留 actor 包原地不动、不删、不改签名、不实现进 TurnBoundary）。
-  def resetForInterrupt: AgentState = s.copy(
-    execution = ExecutionContext
-      .idle(s.execution.messages, s.execution.turnIdx, s.execution.currentTurnId)
+  // 2026-09-27 裁定（ORCH2-P6 定案）：同上——本方法=共享体（carryImmediateInputs
+  // =true，#13 携带腿）+ 外层 compaction.pendingJob 清位（原位保留，不进共享体）。
+  def resetForInterrupt: AgentState =
+    resetCarriedExecution(s, s.execution.messages, s.execution.turnIdx, carryImmediateInputs = true)
+      .copy(compaction = s.compaction.copy(pendingJob = None))
+end extension
+
+// 2026-09-27 裁定（ORCH2-P6）：reset 族共享体——两法逐字同形的携带段
+// （events/outstanding/owedCompletion 三携带 + currentTurnId 保号）单点化；
+// 两法原各自的「Sub-agent barrier」「#25」注措辞不同 ⇒ 按作者裁定注释迁移铁律
+// 逐字并置（不合并、不删、各自源上下文保留）；#13 imm 携带以
+// carryImmediateInputs 实参显式化（false ⇒ 该字段不置=idle 工厂默认 Nil）。
+// 落点 actor 包原地（ORCH2-P6：禁 actor→agent 反向依赖，不进 TurnBoundary）。
+private def resetCarriedExecution(
+  s: AgentState,
+  messages: List[Message],
+  turnIdx: Int,
+  carryImmediateInputs: Boolean
+): AgentState =
+  s.copy(execution =
+    ExecutionContext
+      .idle(messages, turnIdx, s.execution.currentTurnId)
+      // Sub-agent barrier: already-received results held for batch delivery are
+      // still due to the agent — survive the reset (the workers keep running).
       // Sub-agent barrier: held results survive an interrupt — they are still due.
       .copy(
         pendingEvents = s.execution.pendingEvents,
         outstandingSubagentResults = s.execution.outstandingSubagentResults,
+        // #25: a parked completion notification is still owed — the
+        // supervisor/bridge is still waiting for the final answer.
         // #25: parked completion debt survives an interrupt/restart —
         // the waiting requester is still owed the final answer.
         owedCompletion = s.execution.owedCompletion,
         // #13: undelivered immediate inputs (queued Mail) survive
         // interrupt/restart — they are user-originated work; resetting
         // them away silently dropped tasks on every restartAgent.
-        pendingImmediateInputs = s.execution.pendingImmediateInputs
-      ),
-    compaction = s.compaction.copy(pendingJob = None)
+        pendingImmediateInputs = if carryImmediateInputs then s.execution.pendingImmediateInputs else Nil
+      )
   )
-end extension
 
 case class ConsumeResult(
   text: String,

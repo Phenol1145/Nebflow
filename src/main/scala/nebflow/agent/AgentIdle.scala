@@ -41,6 +41,10 @@ private[agent] object AgentIdle:
   )(using ctx: ActorContext[AgentCommand]): Behavior[AgentCommand] =
     Behaviors.receiveMessage:
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 UserInput = 直投开轮
+      // （dedup/语言检测/chatWidth/判源/Busy/注入事件/pipeLlmCall），与
+      // processing 缓冲腿、frozen 唤醒/排队腿真语义差异 ⇒ 整站留（相同碎片
+      // 量过小不提取；判源面已 ORCH1-R5 收口）。
       case AgentCommand.UserInput(
             text,
             replyTo,
@@ -138,6 +142,9 @@ private[agent] object AgentIdle:
           end for
         end if
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 AskQuestion 直启 ask 轮，
+      // frozen 态唤醒腿多 Resumed 帧 + frozenReason 清位 + resetCrossTurn——
+      // 真语义差异 ⇒ 整站留。
       case AgentCommand.AskQuestion(question, askSessionId) =>
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "ask-start", s"q=${question.take(60)}")
         val askReminder = AskService.buildAskReminder(question)
@@ -148,6 +155,9 @@ private[agent] object AgentIdle:
           .withNextLoopTurn
         pipeLlmCall(agentDef, resources, depth, parentRef, askState, None, DispatchCause.UserWake)
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 SkillActivate 带
+      // sessionBusyIO2 直投腿，frozen 态唤醒腿为 Resumed 链 + resetCrossTurn——
+      // 真语义差异 ⇒ 整站留（发射腿已 ORCH1-R1 归口 TurnBoundary.emitForSkill）。
       case AgentCommand.SkillActivate(skillName, input, skillSessionId, skillContent, skillBaseDir) =>
         logAgentEvent(
           agentDef,
@@ -176,20 +186,26 @@ private[agent] object AgentIdle:
         yield result
 
       case AgentCommand.Interrupt() =>
+        // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 Interrupt = no-op 留
+        // 本态——与 processing/frozen 的「中断放弃续跑」腿（本批已收口
+        // BehaviorCommon.interruptToIdle）真语义差异（无在飞 turn 可中断）⇒
+        // 原样保留。
         IO.pure(idle(agentDef, resources, depth, parentRef, state))
 
       case AgentCommand.Stop(_) =>
-        for
-          _ <- ctx.cancelCurrentTurn()
-
-          _ <- killSessionShellProcesses(state)
-          _ <- fireLifecycleStopHooks(resources, state)
-        yield Behaviors.stopped
+        // 2026-09-27 裁定（ORCH2-P1）：三态 Stop 公共序列收口
+        // BehaviorCommon.stopSequence；本态无 registry 中间腿 ⇒ IO.unit 恒值
+        // 实参（参数化退化形态，行为逐字不变）；本态原无 logAgentEvent ⇒ 不补。
+        BehaviorCommon.stopSequence(resources, state)(IO.unit)
 
       case AgentCommand.ClearReadTracker =>
         clearReadTrackerStay(state)(IO.pure(idle(agentDef, resources, depth, parentRef, state)))
 
       case AgentCommand.ResetSession =>
+        // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本站与 processing/frozen 收敛
+        // 面（AgentActor.resetSessionHandler）不同形——本态 cancelCurrentTurn 起手 /
+        // 无 Interrupted 帧 / 无 registry 回写 / 无 resetToIdle(Nil) 清场（F 批
+        // scaladoc 已裁定留守）⇒ 原样保留。
         for
           _ <- ctx.cancelCurrentTurn()
 
@@ -265,6 +281,10 @@ private[agent] object AgentIdle:
       case n: AgentCommand.BackgroundTaskNotification =>
         forwardBackgroundTaskNotification(n)(IO.pure(idle(agentDef, resources, depth, parentRef, state)))
 
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 ExternalEvent = barrier
+      // 判定 + 立即注入开轮三腿（#418/批完成/单件），processing 态排队+气泡+
+      // persist、frozen 态静默排队——真语义差异 ⇒ 整站留（收件气泡腿已 ORCH1-R2、
+      // 清队/预插已 ORCH1-R8 单点）。
       case AgentCommand.ExternalEvent(source, eventType, payload, metadata, correlationId) =>
         logAgentEvent(
           agentDef,
@@ -437,25 +457,19 @@ private[agent] object AgentIdle:
         updateGitBranchStay(state, branch)(s => IO.pure(idle(agentDef, resources, depth, parentRef, s)))
 
       case AgentCommand.CompactionComplete(result) =>
-        logAgentEvent(
+        // 2026-09-27 裁定（ORCH2-P1）：stale 兜底公共段与 AgentFrozen 逐字同形 ⇒
+        // 改指 BehaviorCommon.staleCompactionDiscard；deferred 结算文案字面量原样
+        // 留案体作实参，本态 Some 腿**不**清 pendingCompaction（与 frozen 之
+        // 设计差）以 clearPendingCompaction=false 显式参数化，回本态构造以 stay
+        // 续参注入（原「Compaction finished…」注释随迁共享方法体）。
+        BehaviorCommon.staleCompactionDiscard(
           agentDef,
           depth,
-          state.sessionId,
-          state.sessionName,
-          "stale-compaction-discarded",
-          result.fold(err => s"err=${err.take(60)}", msgs => s"ok=${msgs.size}msgs")
-        )
-        // Compaction finished (even if stale): messages shrank, the cached
-        // systemStable is rebuilt on the next turn.
-        val staleState = state.invalidateSystemStableCache
-        state.pendingCompaction.flatMap(_.replyDeferred) match
-          case Some(d) =>
-            ctx.forkTurn(
-              d.complete(Left("Compaction result arrived after agent returned to idle"))
-                .void
-                .handleErrorWith(_ => IO.unit)
-            ) *> IO.pure(idle(agentDef, resources, depth, parentRef, staleState))
-          case None => IO.pure(idle(agentDef, resources, depth, parentRef, staleState))
+          state,
+          result,
+          "Compaction result arrived after agent returned to idle",
+          clearPendingCompaction = false
+        )(s => IO.pure(idle(agentDef, resources, depth, parentRef, s)))
 
       // 2026-09-13（permshield S1）：`AgentCommand.SetSafetyMode` 已退役（档位 =
       // 应用级持久值，WS/REST 写入口直接落盘 + 热读，无需通知活 agent 改副本）；
@@ -492,6 +506,8 @@ private[agent] object AgentIdle:
       // ② (2026-09-11): `fromUser` is carried across the conversion — dropping it
       // here is exactly what made a real human text land in the
       // `clientMessageId=None ⇒ source="tool"` fallback (diagnosis §1.4 idle row).
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 ImmediateInput 转 UserInput
+      // 直投，processing/frozen 为排队腿——真语义差异 ⇒ 整站留。
       case AgentCommand.ImmediateInput(
             text,
             blocks,
@@ -526,6 +542,9 @@ private[agent] object AgentIdle:
       // head-check the duplicate injected the same task as TWO turns (double
       // LLM calls, double tool work). Only drain when this item is still the
       // disk head; stale/duplicate triggers are no-ops.
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 MailQueued = 空闲 gate
+      // 全量投递（#407），与 processing/frozen 的计数腿（本批已收口
+      // BehaviorCommon.mailQueuedCountUp）真语义差异 ⇒ 整站留。
       case AgentCommand.MailQueued(item, _) =>
         val sid = state.sessionId.getOrElse("")
         for
@@ -618,6 +637,10 @@ private[agent] object AgentIdle:
         end for
 
       // Supervisor restart in idle state
+      // 2026-09-27 裁定（ORCH2-P3 保留:语义差异）：本态 RestartAgent 与
+      // processing/frozen 收敛面（BehaviorCommon.restartAgentCore）不同形——本态
+      // 无 cancelCurrentTurn / 压缩轮 deferred 结算 / Interrupted 帧三腿（无在飞
+      // turn）⇒ 原样保留（log 字面量 "restart-idle" 亦为本站专属）。
       case AgentCommand.RestartAgent(level) =>
         logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "restart-idle", s"level=${level.toString}")
         for
