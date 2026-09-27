@@ -93,8 +93,17 @@
       "TS2339": 8
     },
     "src/main/resources/web/js/sidebar.js": {
-      "TS2339": 94,
+      "TS2339": 64,
       "TS2345": 1
+    },
+    "src/main/resources/web/js/sidebar/pathRules.js": {
+      "TS2339": 7
+    },
+    "src/main/resources/web/js/sidebar/presetsAdmin.js": {
+      "TS2339": 9
+    },
+    "src/main/resources/web/js/sidebar/providersUi.js": {
+      "TS2339": 14
     },
     "src/main/resources/web/js/viewers/docx.js": {
       "TS2339": 4
