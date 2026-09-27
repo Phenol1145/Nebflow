@@ -471,10 +471,33 @@ private[gateway] object WsSessionChatHandlers:
           inboundEnvelope(text).sessionId
         val instruction =
           parse(text).flatMap(_.hcursor.downField("instruction").as[String]).toOption.filter(_.nonEmpty)
-        logger.info("Manual compaction triggered") *>
-          ensureAgent(compactSessionId)(ref =>
-            ref ! AgentCommand.TriggerCompaction("full", postCompactInstruction = instruction)
+        // mention-tokens(feat/mention-tokens 2026-09-27)：instruction 中的 @实体/$技能
+        // 解析为指针行追加（postCompactInstruction 的消费端 AgentProcessing 不变——
+        // 压缩完成后它仍作为一条 user 消息续跑一轮）。
+        instruction
+          .map(i =>
+            InputMentions
+              .resolve(
+                i,
+                InputMentions.defaultLookups(
+                  compactSessionId,
+                  resolveExplorerBaseRoot(compactSessionId, None),
+                  sessionStore
+                )
+              )
+              .map { case (resolved, unresolved) =>
+                if unresolved.nonEmpty then
+                  logger.debug(s"[mentions] unresolved in compact: ${unresolved.map(_.token).mkString(", ")}")
+                Some(resolved)
+              }
           )
+          .getOrElse(IO.pure(None))
+          .flatMap { instruction2 =>
+            logger.info("Manual compaction triggered") *>
+              ensureAgent(compactSessionId)(ref =>
+                ref ! AgentCommand.TriggerCompaction("full", postCompactInstruction = instruction2)
+              )
+          }
       case "fork" =>
         val forkSessionId =
           inboundEnvelope(text).sessionId
