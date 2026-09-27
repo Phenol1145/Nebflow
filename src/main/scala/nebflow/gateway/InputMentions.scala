@@ -10,18 +10,19 @@ import nebflow.core.entity.EntityLoader
 import nebflow.core.project.ProjectStore
 import nebflow.core.skill.SkillService
 
-/** 提及 token 分词与解析。
-  *
-  * 语法(v1):
-  *  - `@/abs` `@./rel` `@rel/path` `@~/x` —— 文件(相对会话 explorer 根;`@/x` 也按根相对,
-  *    Windows 盘符路径原样);存在性校验,指针只带路径不带正文。
-  *  - `@project:名称` / `@flow:名称` / `@session:名称或id` —— 带类型前缀的数据实体。
-  *  - `$技能名` —— 技能(SkillService 名册,含 `ns/name` 命名空间形态)。
-  *
-  * 分词边界:token 前一字符不是 ASCII 词字符(挡住邮箱 `user@x.com`,放行 CJK 紧邻
-  * `看@project:x 的`);尾随标点剥离;`\@` `\$` 转义不解析。裸 `@词`(无路径形态、无类型
-  * 前缀)不是提及——自然语言零破坏。
-  */
+/**
+ * 提及 token 分词与解析。
+ *
+ * 语法(v1):
+ *  - `@/abs` `@./rel` `@rel/path` `@~/x` —— 文件(相对会话 explorer 根;`@/x` 也按根相对,
+ *    Windows 盘符路径原样);存在性校验,指针只带路径不带正文。
+ *  - `@project:名称` / `@flow:名称` / `@session:名称或id` —— 带类型前缀的数据实体。
+ *  - `$技能名` —— 技能(SkillService 名册,含 `ns/name` 命名空间形态)。
+ *
+ * 分词边界:token 前一字符不是 ASCII 词字符(挡住邮箱 `user@x.com`,放行 CJK 紧邻
+ * `看@project:x 的`);尾随标点剥离;`\@` `\$` 转义不解析。裸 `@词`(无路径形态、无类型
+ * 前缀)不是提及——自然语言零破坏。
+ */
 object InputMentions:
 
   sealed trait Mention:
@@ -36,11 +37,11 @@ object InputMentions:
 
   /** 各实体类别的查询面:None = 无法解析(fail-open 原文保留)。返回值即指针所需最小数据。 */
   final case class Lookups(
-    file: String => IO[Option[String]],              // 原始路径 -> 存在的绝对路径
+    file: String => IO[Option[String]], // 原始路径 -> 存在的绝对路径
     project: String => IO[Option[(String, String)]], // 名称 -> (名称, workspace)
-    flow: String => IO[Option[String]],              // 名称 -> 确认存在的规范名
+    flow: String => IO[Option[String]], // 名称 -> 确认存在的规范名
     session: String => IO[Option[(String, String)]], // 名称或id -> (名称, id)
-    skill: String => IO[Option[(String, String)]],   // 名称 -> (名称, 描述)
+    skill: String => IO[Option[(String, String)]] // 名称 -> (名称, 描述)
   )
 
   private val TokenRe = "[@$][^\\s]+".r
@@ -82,10 +83,11 @@ object InputMentions:
       Some(FileMention(token, token.drop(1)))
     else None // 裸 @词 不是提及(邮箱/普通符号场景零破坏)
 
-  /** 解析并生成指针块。返回 (增强后文本, 未解析提及)。
-    * 有可解析提及 ⇒ 文本尾部追加 `\n\n[提及解析]\n` + 每提及一行的指针(去重保序);
-    * 全部未解析 ⇒ 文本逐字节不变。查询异常按 None 处理(fail-open)。
-    */
+  /**
+   * 解析并生成指针块。返回 (增强后文本, 未解析提及)。
+   * 有可解析提及 ⇒ 文本尾部追加 `\n\n[提及解析]\n` + 每提及一行的指针(去重保序);
+   * 全部未解析 ⇒ 文本逐字节不变。查询异常按 None 处理(fail-open)。
+   */
   def resolve(text: String, lookups: Lookups): IO[(String, List[Mention])] =
     val mentions = tokenize(text)
     if mentions.isEmpty then IO.pure((text, Nil))
@@ -95,7 +97,7 @@ object InputMentions:
           acc.flatMap { case (lines, unresolved) =>
             pointerFor(m, lookups).map {
               case Some(line) => (lines :+ line, unresolved)
-              case None       => (lines, unresolved :+ m)
+              case None => (lines, unresolved :+ m)
             }
           }
         }
@@ -105,6 +107,10 @@ object InputMentions:
             else text + "\n\n[提及解析]\n" + lines.distinct.mkString("\n")
           (out, unresolved)
         }
+
+    end if
+
+  end resolve
 
   private def pointerFor(m: Mention, l: Lookups): IO[Option[String]] =
     val q: IO[Option[String]] = m match
@@ -128,9 +134,10 @@ object InputMentions:
 
   // ── 生产装配(从网关既有能力拼装默认查询面) ──────────────────────────
 
-  /** 文件查询:相对/`~`/盘符绝对三种形态 → 存在性校验后的绝对路径。
-    * `root` 为按需求值的 IO(explorer 根)——消息不含文件提及则零开销。
-    */
+  /**
+   * 文件查询:相对/`~`/盘符绝对三种形态 → 存在性校验后的绝对路径。
+   * `root` 为按需求值的 IO(explorer 根)——消息不含文件提及则零开销。
+   */
   def fileLookup(root: IO[String]): String => IO[Option[String]] = raw =>
     root.flatMap { r =>
       IO {
@@ -157,14 +164,13 @@ object InputMentions:
   def defaultLookups(sessionId: String, explorerRoot: IO[String], store: SessionStore): Lookups =
     Lookups(
       file = fileLookup(explorerRoot),
-      project = name =>
-        ProjectStore.list().map(_.find(_.name.equalsIgnoreCase(name)).map(p => (p.name, p.workspace))),
+      project = name => ProjectStore.list().map(_.find(_.name.equalsIgnoreCase(name)).map(p => (p.name, p.workspace))),
       flow = name => EntityLoader.listFlows().map(m => m.keys.find(_.equalsIgnoreCase(name))),
       session = key =>
         store.listSessions.map(
           _.find(m => m.id == key || m.name.equalsIgnoreCase(key)).map(m => (m.name, m.id))
         ),
-      skill = name => SkillService.listSkills().map(_.find(_.name == name).map(s => (s.name, s.description))),
+      skill = name => SkillService.listSkills().map(_.find(_.name == name).map(s => (s.name, s.description)))
     )
 
 end InputMentions

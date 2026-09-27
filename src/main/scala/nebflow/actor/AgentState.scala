@@ -1100,6 +1100,10 @@ extension (s: AgentState)
     case Some(cw) if cw != s.session.contextWindow => s.copy(session = s.session.copy(contextWindow = cw))
     case _ => s
 
+  // 2026-09-27 裁定（ORCH1-R9 待下批：携带子集不同——resetToIdle 不带
+  // pendingImmediateInputs/pendingUserInputs，resetForInterrupt 带 imm 不带 user，
+  // 与 TurnBoundary.withCarriedQueues/toIdle 默认形不可逐字合并 ⇒ Battle-2 随
+  // T5/T6 处置）——本批留 actor 包原地不动、不删、不改签名（纯注释，零代码耦合）。
   def resetToIdle(messages: List[Message], turnIdx: Int = s.execution.turnIdx): AgentState =
     s.copy(execution =
       ExecutionContext
@@ -1115,6 +1119,9 @@ extension (s: AgentState)
         )
     )
 
+  // 2026-09-27 裁定（ORCH1-R9 待下批：与 resetForInterrupt 携带子集不同——本
+  // 方法不带 imm/user，resetForInterrupt 带 imm 不带 user——归 Battle-2 随
+  // T5/T6 处置；本批留 actor 包原地不动、不删、不改签名、不实现进 TurnBoundary）。
   def resetForInterrupt: AgentState = s.copy(
     execution = ExecutionContext
       .idle(s.execution.messages, s.execution.turnIdx, s.execution.currentTurnId)

@@ -242,17 +242,15 @@ private[agent] object AgentProcessing:
             // （stream 层禁 provider 拼接），fatal 会连队列一起丢且 UI 报错，
             // 「恢复」退化成「失败」（round-5 隔离冒烟实证：kick 后零恢复请求、
             // agent 直接 idle、队列滞留）。
-            val (immHeadAfterAbort, remainingImmAfterAbort) = TurnBoundaryDrains.drainHead(
-              state.execution.pendingImmediateInputs,
-              compactionPending = false
-            )
+            // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+            // TurnBoundary.drainForRecoverableAbortImm（compactionPending = false
+            // 实参按站传入，决策仍走 TurnBoundaryDrains.drainHead 纯函数）。
+            val (immHeadAfterAbort, remainingImmAfterAbort) =
+              TurnBoundary.drainForRecoverableAbortImm(state)
             val immInputs = immHeadAfterAbort.toList
-            val immMessages = immInputs.map(imm =>
-              (imm.blocks match
-                case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-                case _ => Message(MessageRole.User, Left(imm.text))
-              ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
-            )
+            // 2026-09-27 裁定（ORCH1-R7）：四处逐字同形 imm→Message 转换收口
+            // TurnBoundary.immediateInputToMessage。
+            val immMessages = immInputs.map(TurnBoundary.immediateInputToMessage)
             logAgentEvent(
               agentDef,
               depth,
@@ -263,16 +261,16 @@ private[agent] object AgentProcessing:
             )
             val updatedState = state
               .copy(execution =
-                ExecutionContext
-                  .idle(state.execution.messages ++ immMessages, state.execution.turnIdx, state.execution.currentTurnId)
-                  .copy(
-                    pendingImmediateInputs = remainingImmAfterAbort,
-                    pendingMailQueueCount = state.execution.pendingMailQueueCount,
-                    pendingUserInputs = state.execution.pendingUserInputs,
-                    pendingEvents = state.execution.pendingEvents,
-                    outstandingSubagentResults = state.execution.outstandingSubagentResults,
-                    owedCompletion = state.execution.owedCompletion
-                  )
+                // 2026-09-27 裁定（ORCH1-R8）：idle 重建 + 三队列跨边界携带改指
+                // TurnBoundary.withCarriedQueues——全携带默认、已消费 imms 与
+                // currentTurnId 显式传入（owed = exec.owedCompletion 默认原形），
+                // 组装语义逐字不变。
+                TurnBoundary.withCarriedQueues(
+                  state.execution,
+                  state.execution.messages ++ immMessages,
+                  currentTurnId = state.execution.currentTurnId,
+                  drainedImmediateInputs = Some(remainingImmAfterAbort)
+                )
               )
               .withNextLoopTurn
             for
@@ -281,6 +279,8 @@ private[agent] object AgentProcessing:
               _ <- state.sessionId.fold(IO.unit)(sid => emitSessionBusy(state.wsSend, sid, busy = true))
               // One blue injected bubble per sourced input — same (new) turn group.
               // ② (2026-09-11): 真人输入不产注入气泡（fromUser 优先于 source）。
+              // 2026-09-27 裁定（ORCH1-R3 待下批：帧字段与统一形态不可证等价
+              // （MailTool 投递路径）——本腿缺 delivery）：保留原状，Battle-2 靶点。
               _ <- immInputs.flatMap { imm =>
                 injectionSourceFor(imm.fromUser, imm.source).map(src =>
                   emitInjectedUserEvent(
@@ -541,12 +541,12 @@ private[agent] object AgentProcessing:
         // history is replaced by the summary, so an event drained here would be
         // consumed from the queue yet discarded with the pre-compaction
         // messages. CompactionComplete re-drains afterwards.
+        // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+        // TurnBoundary.drainForToolsCompleteEvents（compactionPending =
+        // state.pendingCompaction.isDefined 实参按站传入，决策仍走
+        // TurnBoundaryDrains.drainBarrier 纯函数）。
         val (drainedEvents, remainingEvents) =
-          TurnBoundaryDrains.drainBarrier(
-            state.execution.pendingEvents,
-            state.pendingCompaction.isDefined,
-            state.execution.outstandingSubagentResults
-          )
+          TurnBoundary.drainForToolsCompleteEvents(state)
         val eventMessages = drainedEvents match
           case Nil => Nil
           case events =>
@@ -563,8 +563,10 @@ private[agent] object AgentProcessing:
         // immediate input（原缺陷⑥ 合批 = 整队塞进同一次续轮，已按 root 裁定删除）。
         // While compaction is in progress, keep inputs queued — injecting mid-compaction
         // risks the input being lost in the summary. CompactionComplete drains them.
+        // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+        // TurnBoundary.drainForToolsCompleteImm（compactionPending 实参按站传入）。
         val (immHeadInput, remainingImmInputs) =
-          TurnBoundaryDrains.drainHead(state.execution.pendingImmediateInputs, state.pendingCompaction.isDefined)
+          TurnBoundary.drainForToolsCompleteImm(state)
         val immInputs = immHeadInput.toList
         val immediateMessages = immInputs match
           case Nil => Nil
@@ -577,30 +579,16 @@ private[agent] object AgentProcessing:
               "immediate-input-injected-at-tools-complete",
               s"batch=${inputs.size} texts=${inputs.map(_.text.take(40)).mkString(" | ").take(200)} remaining=${remainingImmInputs.size}"
             )
-            inputs.map(imm =>
-              (imm.blocks match
-                case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-                case _ => Message(MessageRole.User, Left(imm.text))
-              ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
-            )
+            // 2026-09-27 裁定（ORCH1-R7）：四处逐字同形 imm→Message 转换收口
+            // TurnBoundary.immediateInputToMessage。
+            inputs.map(TurnBoundary.immediateInputToMessage)
         // ② (2026-09-11): 真人输入不产注入气泡（fromUser 优先于 source）。
-        val immEventIO = immInputs.flatMap { imm =>
-          injectionSourceFor(imm.fromUser, imm.source).map(src =>
-            emitInjectedUserEvent(
-              resources,
-              state.wsSend,
-              state.sessionId,
-              imm.text,
-              src,
-              imm.eventType,
-              imm.sender,
-              imm.senderTeam,
-              imm.delivery,
-              project = imm.project,
-              sessionProject = state.projectName
-            )
-          )
-        }.sequence_
+        // 2026-09-27 裁定（ORCH1-R1 P1 对3）：与 AgentActor#emitInjectedBubbles
+        // immediate-input 腿逐字同形 ⇒ 统一改指 TurnBoundary.emitForImmediateInput
+        // （injectionSourceFor 守卫收进方法内，None ⇒ IO.unit 保持）。
+        val immEventIO = immInputs.traverse_ { imm =>
+          TurnBoundary.emitForImmediateInput(resources, state, imm)
+        }
         // Q1-A2′ 的「本边界整队合批注入 queued UserInput」已于 2026-09-15 ub 缺陷批
         // 退役（root 裁定：排队消息按序逐条注入、每条独立成 turn、禁合并语义）：
         // `pendingUserInputs` 在本边界**一律不消费**，全部留在全元数据队列，由 turn
@@ -966,8 +954,11 @@ private[agent] object AgentProcessing:
                       // so the idle handler processes it with full metadata — the
                       // replyTo completion target must NOT be stranded — preserving the
                       // tail for the next turn boundary drain (mirrors finishTurnCont).
-                      drain.exec.pendingUserInputs.headOption match
-                        case Some(userCmd) =>
+                      // 2026-09-27 裁定（ORCH1-R8）：head-forward + tail 取队首语义
+                      // 改指 TurnBoundary.forwardUserInputHead（tail-safe 判据随迁
+                      // 方法体；本分支原 .tail 仅在队首命中时求值 ⇒ 逐字等价）。
+                      TurnBoundary.forwardUserInputHead(drain.exec) match
+                        case (Some(userCmd), execAfter) =>
                           (ctx.self ! userCmd) *>
                             IO.pure(
                               idle(
@@ -975,12 +966,10 @@ private[agent] object AgentProcessing:
                                 resources,
                                 depth,
                                 parentRef,
-                                compactedState.copy(execution =
-                                  drain.exec.copy(pendingUserInputs = drain.exec.pendingUserInputs.tail)
-                                )
+                                compactedState.copy(execution = execAfter)
                               )
                             )
-                        case None =>
+                        case (None, _) =>
                           // Truly nothing queued during the window — the continuation
                           // state (messages compacted, pendingCompaction cleared) is final.
                           IO.pure(idle(agentDef, resources, depth, parentRef, compactedState))
@@ -1053,30 +1042,16 @@ private[agent] object AgentProcessing:
         // satisfies one outstanding slot of the parallel batch. The drain at the
         // turn boundary only releases subtask/delegate events once the counter
         // hits 0, so a batch completing mid-turn is still injected together.
-        val updatedOutstanding =
-          if TurnBoundaryDrains.isSubagentResult(event) then math.max(0, state.execution.outstandingSubagentResults - 1)
-          else state.execution.outstandingSubagentResults
-        val updatedExec = state.execution.copy(
-          pendingEvents = state.execution.pendingEvents :+ event,
-          outstandingSubagentResults = updatedOutstanding
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：pendingEvents 入队 + barrier 递减改指
+        // TurnBoundary.enqueueExternalEvent（与 AgentFrozen 两处递减逐字同形 ⇒
+        // 单点；上方 barrier 语义注释原样留守本站）。
+        val updatedExec = TurnBoundary.enqueueExternalEvent(state.execution, event)
         // 任务 Q: emit the visible bubble at receive time (the combined
         // <system-reminder> injected later at finishTurn is for the LLM).
-        val visSource = visibleExternalEventSource(source, eventType)
-        val bubbleIO = visSource match
-          case Some(s) =>
-            val agentName = metadata("agentName").flatMap(_.asString)
-            emitInjectedUserEvent(
-              resources,
-              state.wsSend,
-              state.sessionId,
-              payload,
-              s,
-              Some(eventType),
-              agentName,
-              sessionProject = state.projectName
-            )
-          case None => IO.unit
+        // 2026-09-27 裁定（ORCH1-R2）：与 AgentIdle ExternalEvent 收件气泡腿统一
+        // 改指 TurnBoundary.emitForExternalEvent（visibleExternalEventSource 守卫
+        // 收进方法内，None ⇒ IO.unit 保持）。
+        val bubbleIO = TurnBoundary.emitForExternalEvent(resources, state, source, eventType, payload, metadata)
         bubbleIO *>
           emitStream(
             state.wsSend,
@@ -1225,19 +1200,16 @@ private[agent] object AgentProcessing:
           "user-input-queued",
           s"textLen=${msg.text.length} pending=${state.execution.pendingUserInputs.size + 1}"
         )
-        val updatedExec = state.execution.copy(
-          pendingUserInputs = state.execution.pendingUserInputs :+ msg
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：入队改指 TurnBoundary.enqueueUserInput。
+        val updatedExec = TurnBoundary.enqueueUserInput(state.execution, msg)
         IO.pure(processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending))
       case msg: AgentCommand.SkillActivate =>
-        val updatedExec = state.execution.copy(
-          pendingUserInputs = state.execution.pendingUserInputs :+ msg
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：三枚用户命令缓冲腿统一改指
+        // TurnBoundary.enqueueUserInput（追加语义 :+ 逐字不变）。
+        val updatedExec = TurnBoundary.enqueueUserInput(state.execution, msg)
         IO.pure(processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending))
       case msg: AgentCommand.AskQuestion =>
-        val updatedExec = state.execution.copy(
-          pendingUserInputs = state.execution.pendingUserInputs :+ msg
-        )
+        val updatedExec = TurnBoundary.enqueueUserInput(state.execution, msg)
         IO.pure(processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending))
       case msg: AgentCommand.ImmediateInput =>
         logAgentEvent(
@@ -1248,9 +1220,9 @@ private[agent] object AgentProcessing:
           "immediate-input-queued",
           s"textLen=${msg.text.length}"
         )
-        val updatedExec = state.execution.copy(
-          pendingImmediateInputs = state.execution.pendingImmediateInputs :+ msg
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：入队改指 TurnBoundary.enqueueImmediateInput
+        // （追加语义 :+ 逐字不变）。
+        val updatedExec = TurnBoundary.enqueueImmediateInput(state.execution, msg)
         persistQueues(state.sessionId, updatedExec) *> IO.pure(
           processing(agentDef, resources, depth, parentRef, state.copy(execution = updatedExec), pending)
         )

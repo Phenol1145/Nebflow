@@ -24,27 +24,9 @@ import nebflow.shared.{NebflowLogger, *}
 private[agent] object AgentIdle:
   import nebflow.agent.AgentActor.*
 
-  /**
-   * Infer the injection source (任务 P) for a tool-originated UserInput that
-   * did not carry an explicit source. Discriminator: clientMessageId is empty
-   * (user WS inputs always carry one). The source is derived from the agent's
-   * own session id prefix, falling back to the fork-adapter replyTo for
-   * Mail ask/fork spawns, and finally the generic "tool".
-   *
-   *   delegate-… → "delegate"   DelegateTool 内核会话（一次性执行件）
-   *   subtask-…  → "subtask"    SubTaskTool worker
-   *   dag-…      → "flow"       FlowDagExecutor node
-   *   otherwise  → "tool"
-   */
-  private def inferInjectionSource(
-    sessionId: Option[String],
-    replyTo: Option[ActorRef[AgentEvent]]
-  ): Option[String] =
-    val sid = sessionId.getOrElse("")
-    if sid.startsWith("delegate-") then Some("delegate")
-    else if sid.startsWith("subtask-") then Some("subtask")
-    else if sid.startsWith("dag-") then Some("flow")
-    else Some("tool")
+  // 2026-09-27 裁定（ORCH1-R5）：原局部助手 inferInjectionSource（含其任务 P 大
+  // 注释）函数体逐字迁往 TurnBoundary（旧局部 helper 真删除，禁 re-export shim）；
+  // idle UserInput 直投腿判源改指 TurnBoundary.userInputInjectionSource。
 
   // ============================================================
   // Idle state
@@ -99,9 +81,10 @@ private[agent] object AgentIdle:
           // a real human text that travelled the ImmediateInput leg arrives with
           // clientMessageId=None and used to be stamped source="tool" (blue TOOL
           // card + isRealUserTurn=false). 真人 ⇒ no source, never.
+          // 2026-09-27 裁定（ORCH1-R5）：判源双守卫（clientMessageId ⇒ None /
+          // injectionSourceFor(fromUser, source.orElse(infer)) 形态）收口 TurnBoundary。
           val injectionSource: Option[String] =
-            if clientMessageId.isDefined then None
-            else injectionSourceFor(fromUser, source.orElse(inferInjectionSource(state.sessionId, replyTo)))
+            TurnBoundary.userInputInjectionSource(clientMessageId, fromUser, source, state.sessionId, replyTo)
           val enrichedBlocks: Option[List[ContentBlock]] = blocks.filter(_.nonEmpty)
           val stateWithFlush = stateWithWidth
           val userMsg = (enrichedBlocks match
@@ -186,15 +169,9 @@ private[agent] object AgentIdle:
           else IO.unit
         for
           _ <- sessionBusyIO2
-          _ <- emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            input,
-            "skill",
-            None,
-            sessionProject = state.projectName
-          )
+          // 2026-09-27 裁定（ORCH1-R1 P1 对1）：与 AgentFrozen SkillActivate 腿逐字
+          // 同形 ⇒ 统一改指 TurnBoundary.emitForSkill。
+          _ <- TurnBoundary.emitForSkill(resources, state, input)
           result <- pipeLlmCall(agentDef, resources, depth, parentRef, processingState, None, DispatchCause.UserWake)
         yield result
 
@@ -330,21 +307,14 @@ private[agent] object AgentIdle:
             AgentStreamEvent.ExternalEventReceived(source, eventType, correlationId),
             isSubagent = depth > 0,
             state.sessionId
-          ) *> (visSource match
-            case Some(s) =>
-              val agentName = metadata("agentName").flatMap(_.asString)
-              emitInjectedUserEvent(
-                resources,
-                state.wsSend,
-                state.sessionId,
-                payload,
-                s,
-                Some(eventType),
-                agentName,
-                sessionProject = state.projectName,
-                waitingForBatch = waiting
-              )
-            case None => IO.unit)
+          ) *> (
+            // 2026-09-27 裁定（ORCH1-R2）：与 AgentProcessing ExternalEvent 收件气泡腿
+            // 统一改指 TurnBoundary.emitForExternalEvent（visibleExternalEventSource
+            // 守卫收进方法内）。waitingForBatch 恒 false——本方法三处调用
+            // （:369/:395/:435 re-pin：行号随本批改指略有漂移）均传 waiting = false，
+            // 证据链全文见 TurnBoundary 方法头裁定注释。
+            TurnBoundary.emitForExternalEvent(resources, state, source, eventType, payload, metadata)
+          )
         // ── Sub-agent result barrier (worker blocking semantics) ──────────
         // Delegate/SubTask results arriving while more of the same parallel
         // batch is still outstanding are HELD in pendingEvents instead of
@@ -400,12 +370,9 @@ private[agent] object AgentIdle:
               depth,
               parentRef,
               state
-                .copy(execution =
-                  state.execution.copy(
-                    outstandingSubagentResults = 0,
-                    pendingEvents = Nil
-                  )
-                )
+                // 2026-09-27 裁定（ORCH1-R8）：批完成清队（outstanding 归零 + HELD
+                // 队列清空）改指 TurnBoundary.clearHeldEvents，语义逐字不变。
+                .copy(execution = TurnBoundary.clearHeldEvents(state.execution))
                 .withMessages(state.messages :+ batchMessage)
                 .withNextLoopTurn, // Block 3：批次汇聚唤醒 = 新 turn
               None
@@ -514,10 +481,9 @@ private[agent] object AgentIdle:
               "queues-recovered",
               s"imm=${q.imms.size} events=${q.events.size}"
             )
-            val exec = state.execution.copy(
-              pendingImmediateInputs = q.imms ++ state.execution.pendingImmediateInputs,
-              pendingEvents = q.events ++ state.execution.pendingEvents
-            )
+            // 2026-09-27 裁定（ORCH1-R8）：崩溃恢复预插（磁盘条目排在内存队列
+            // 之前）改指 TurnBoundary.recoverPersistedQueues，语义逐字不变。
+            val exec = TurnBoundary.recoverPersistedQueues(state.execution, q.imms, q.events)
             IO.pure(idle(agentDef, resources, depth, parentRef, state.copy(execution = exec)))
           case _ => IO.pure(idle(agentDef, resources, depth, parentRef, state))
         }

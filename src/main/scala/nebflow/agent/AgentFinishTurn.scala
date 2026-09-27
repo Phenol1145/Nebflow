@@ -291,6 +291,10 @@ private[agent] object AgentFinishTurn:
                 )
             )
           }
+      // 2026-09-27 裁定（ORCH1-R8）：pendingUserInputs 取队首 + tail-safe 尾留存
+      // 收口 TurnBoundary.forwardUserInputHead（原 :327-329 判据注释随迁方法体；
+      // 纯函数提升不改变下方发送时序）。
+      val (userHeadOpt, execAfterForward) = TurnBoundary.forwardUserInputHead(state.execution)
       for
         _ <- emitDoneIO
         _ <- state.sessionId.fold(IO.unit)(sid =>
@@ -322,43 +326,16 @@ private[agent] object AgentFinishTurn:
         // Drain pending user inputs: forward head to self (agent is now idle,
         // so it will be processed with full metadata by the idle handler). The
         // tail is preserved for the next turn boundary drain.
-        _ <- state.execution.pendingUserInputs.headOption.traverse_(msg => ctx.self ! msg)
+        _ <- userHeadOpt.traverse_(msg => ctx.self ! msg)
       yield
-        // Empty-queue safe tail (same guard style as TurnBoundaryDrains.drainHead):
-        // the REST /api/command turn-end path reaches this branch with an empty
-        // queue on every turn — a bare .tail threw "tail of empty list" there.
-        val remainingUserInputs =
-          val queued = state.execution.pendingUserInputs
-          if queued.isEmpty then queued else queued.tail
-        val keptInteraction = state.execution.interaction.filter(_.pendingPermission.isDefined)
+        // 2026-09-27 裁定（ORCH1-R10 / P4）：手抄逐字段 ExecutionContext.idle copy
+        // 收口 TurnBoundary.toIdle——组装语义不变，原 :340-358（re-pin：随本批
+        // 改指漂移）四段日期裁定注释逐字随迁方法体；keptInteraction 的
+        // pendingPermission 过滤同迁（execAfterForward.interaction 与原
+        // state.execution.interaction 逐字相等——forwardUserInputHead 只动
+        // pendingUserInputs）。
         val updatedState = state
-          .copy(execution =
-            ExecutionContext
-              .idle(newMessages, state.execution.turnIdx)
-              .copy(
-                interaction = keptInteraction,
-                // Preserve queue when compaction is in progress — CompactionComplete drains it.
-                pendingImmediateInputs = state.execution.pendingImmediateInputs,
-                pendingUserInputs = remainingUserInputs,
-                // Sub-agent barrier: held subtask/delegate results and the
-                // outstanding count survive the turn boundary (the batch may
-                // still be running — they are injected when it completes).
-                pendingEvents = state.execution.pendingEvents,
-                outstandingSubagentResults = state.execution.outstandingSubagentResults,
-                // #25: parked completion debt survives the turn boundary —
-                // paid off when a later turn ends with the barrier at 0.
-                owedCompletion = owedAfter,
-                // #10 (2026-08-27 mail-queue wedge): ExecutionContext.idle
-                // rebuilds pendingMailQueueCount to 0. This returnToIdle tail
-                // is ALSO reached by the queue drain branch's idle-gate
-                // deferral path (pendingMailQueueCount>0 but subtree busy) —
-                // without carrying the counter, the NEXT turn's drain branch
-                // (`pendingMailQueueCount > 0`) is permanently false and the
-                // disk queue wedges until another MailQueued arrives. The two
-                // earlier injection branches already carry it; this tail must too.
-                pendingMailQueueCount = state.execution.pendingMailQueueCount
-              )
-          )
+          .copy(execution = TurnBoundary.toIdle(execAfterForward, newMessages, owedAfter))
           .withMailTurnCount(state.mailTurnCount + 1)
         idle(agentDef, resources, depth, parentRef, updatedState)
       end for
@@ -376,12 +353,11 @@ private[agent] object AgentFinishTurn:
     // subtask/delegate results stay held (worker blocking semantics) — they are
     // injected ALL together when the batch completes. Other event types keep
     // the existing serial one-at-a-time drain.
+    // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+    // TurnBoundary.drainForFinishTurnEvents（compactionPending = false 实参
+    // 按站传入，决策仍走 TurnBoundaryDrains.drainBarrier 纯函数）。
     val (drainedEvents, remainingEvents) =
-      TurnBoundaryDrains.drainBarrier(
-        state.execution.pendingEvents,
-        compactionPending = false,
-        state.execution.outstandingSubagentResults
-      )
+      TurnBoundary.drainForFinishTurnEvents(state)
     if drainedEvents.nonEmpty then
       val roundCompleteIO: IO[Unit] =
         if !isSubagent then
@@ -407,6 +383,10 @@ private[agent] object AgentFinishTurn:
       )
       val updatedState = state
         .copy(execution =
+          // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+          // TurnBoundary.withCarriedQueues 默认形仅差 pendingEvents 显式覆盖，
+          // 但站点专属日期注释组（#25）与本批「注释随代码」铁律耦合 ⇒ 不强并）
+          // ——保留原状，Battle-2 靶点。
           ExecutionContext
             .idle(messagesWithPending, state.execution.turnIdx)
             .copy(
@@ -449,10 +429,10 @@ private[agent] object AgentFinishTurn:
       // immediate input 开一个独立 turn；其余留队，由后续 turn 边界逐条消费（到达顺序
       // 不变，每件各自若干 turn ⇒ 每件各自 roundComplete / 一次 save / 一次 pipeLlmCall）。
       // 原缺陷⑥「整批塞进一个新 turn」已删除。
-      val (immHead, remainingInputs) = TurnBoundaryDrains.drainHead(
-        state.execution.pendingImmediateInputs,
-        compactionPending = false
-      )
+      // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+      // TurnBoundary.drainForFinishTurnImm（compactionPending = false 实参按站
+      // 传入，决策仍走 TurnBoundaryDrains.drainHead 纯函数）。
+      val (immHead, remainingInputs) = TurnBoundary.drainForFinishTurnImm(state)
       val immInputs = immHead.toList
       logAgentEvent(
         agentDef,
@@ -474,15 +454,16 @@ private[agent] object AgentFinishTurn:
             )
           )
         else IO.unit
-      val immMessages = immInputs.map(imm =>
-        (imm.blocks match
-          case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-          case _ => Message(MessageRole.User, Left(imm.text))
-        ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
-      )
+      // 2026-09-27 裁定（ORCH1-R7）：四处逐字同形 imm→Message 转换收口
+      // TurnBoundary.immediateInputToMessage。
+      val immMessages = immInputs.map(TurnBoundary.immediateInputToMessage)
       val messagesWithImmediate = newMessages ++ immMessages
       val updatedState = state
         .copy(execution =
+          // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+          // TurnBoundary.withCarriedQueues 默认形仅差 pendingImmediateInputs
+          // 显式覆盖，但站点专属日期注释组（Sub-agent barrier/#25）与本批
+          // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，Battle-2 靶点。
           ExecutionContext
             .idle(messagesWithImmediate, state.execution.turnIdx)
             .copy(
@@ -508,6 +489,9 @@ private[agent] object AgentFinishTurn:
         // One blue injected bubble per sourced input — same group, back to back.
         // ② (2026-09-11): 真人输入没有来源标签 ⇒ 也不产注入气泡（fromUser 优先
         // 于 source，与 Message 侧的 injectionSourceFor 同一判据）。
+        // 2026-09-27 裁定（ORCH1-R3 待下批：帧字段与统一形态不可证等价
+        // （MailTool 投递路径）——本腿缺 delivery/project/sessionProject）：
+        // 保留原状，Battle-2 靶点。
         _ <- immInputs.flatMap { imm =>
           injectionSourceFor(imm.fromUser, imm.source).map(src =>
             emitInjectedUserEvent(
@@ -582,6 +566,13 @@ private[agent] object AgentFinishTurn:
                     messagesWithQueue = newMessages ++ List(queueMessage)
                     updatedState = state
                       .copy(execution =
+                        // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+                        // TurnBoundary.withCarriedQueues 默认形仅差
+                        // mailQueueCountDelta = -1 覆盖、且本腿不带
+                        // pendingImmediateInputs（if 梯子前提 ⇒ 队列恒空，携带
+                        // 恒等价，普查已证），但站点专属日期注释组与本批
+                        // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，
+                        // Battle-2 靶点。
                         ExecutionContext
                           .idle(messagesWithQueue, state.execution.turnIdx)
                           .copy(
@@ -599,21 +590,11 @@ private[agent] object AgentFinishTurn:
                     _ <-
                       if !isSubagent then emitSessionBusy(state.wsSend, sid, busy = true)
                       else IO.unit
-                    _ <- emitInjectedUserEvent(
-                      resources,
-                      state.wsSend,
-                      state.sessionId,
-                      item.message,
-                      "mail-queue",
-                      Some("queue"),
-                      Some(item.from),
-                      None,
-                      Some("queue"),
-                      // 气泡四段式统一批（2026-09-15）：legacy 排空腿的 source =
-                      // `"mail-queue"` 不在 KIND 词表内 ⇒ 本腿恒不产 header（旧呈现
-                      // 逐字保持）。PROJECT 段落回级别照传，未来若纳入词表即生效。
-                      sessionProject = state.projectName
-                    )
+                    // 2026-09-27 裁定（ORCH1-R4）：mail-queue legacy 排空腿纯搬名
+                    // TurnBoundary.emitForMailQueueLegacy——字面量
+                    // "mail-queue"/Some("queue")/None/Some("queue") 序列与
+                    // 气泡四段式统一批（2026-09-15）注释逐字随迁方法体。
+                    _ <- TurnBoundary.emitForMailQueueLegacy(resources, state, item.message, item.from)
                     _ <- ctx.forkTurn(
                       (resources.sessionStore.saveMessagesForSession(sid, messagesWithQueue) *>
                         resources.sessionStore.flushIndex)

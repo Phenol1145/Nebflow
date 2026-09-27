@@ -294,9 +294,13 @@ private[agent] object AgentFrozen:
             "freeze-queue-input",
             s"textLen=${text.length}"
           )
+          // 2026-09-27 裁定（ORCH1-R8）：入队改指 TurnBoundary.enqueueUserInput
+          // （追加语义 :+ 逐字不变；UserInput 重建 12 参原样——本腿不转 project
+          // 字段是既有行为，逐字保持）。
           val queued = state.copy(execution =
-            state.execution.copy(
-              pendingUserInputs = state.execution.pendingUserInputs :+ AgentCommand.UserInput(
+            TurnBoundary.enqueueUserInput(
+              state.execution,
+              AgentCommand.UserInput(
                 text,
                 replyTo2,
                 clientMessageId,
@@ -368,15 +372,9 @@ private[agent] object AgentFrozen:
               state.sessionId
             ) *> updateRegistryFrozenReason(resources, state.sessionId, None)
           }
-          _ <- emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            input,
-            "skill",
-            None,
-            sessionProject = state.projectName
-          )
+          // 2026-09-27 裁定（ORCH1-R1 P1 对1）：与 AgentIdle SkillActivate 唤醒腿
+          // 逐字同形 ⇒ 统一改指 TurnBoundary.emitForSkill。
+          _ <- TurnBoundary.emitForSkill(resources, state, input)
           result <- pipeLlmCall(agentDef, resources, depth, parentRef, processingState, None, DispatchCause.UserWake)
         yield result
         end for
@@ -556,15 +554,10 @@ private[agent] object AgentFrozen:
           s"source=$source type=$eventType"
         )
         val event = AgentCommand.ExternalEvent(source, eventType, payload, metadata, correlationId)
-        val isSubagentResult = TurnBoundaryDrains.isSubagentResult(event)
-        val outstanding = state.execution.outstandingSubagentResults
-        val newOutstanding = if isSubagentResult then math.max(0, outstanding - 1) else outstanding
-        val queued = state.copy(execution =
-          state.execution.copy(
-            outstandingSubagentResults = newOutstanding,
-            pendingEvents = state.execution.pendingEvents :+ event
-          )
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：pendingEvents 入队 + barrier 递减改指
+        // TurnBoundary.enqueueExternalEvent（与 AgentProcessing 递减腿逐字同形 ⇒
+        // 单点；上方 barrier 语义注释原样留守本站）。
+        val queued = state.copy(execution = TurnBoundary.enqueueExternalEvent(state.execution, event))
         IO.pure(
           frozen(agentDef, resources, depth, parentRef, queued, replyTo, resumeAt, reason, retryCount, escalation)
         )
@@ -579,9 +572,9 @@ private[agent] object AgentFrozen:
           "freeze-queue-immediate",
           s"textLen=${msg.text.length}"
         )
-        val queued = state.copy(execution =
-          state.execution.copy(pendingImmediateInputs = state.execution.pendingImmediateInputs :+ msg)
-        )
+        // 2026-09-27 裁定（ORCH1-R8）：入队改指 TurnBoundary.enqueueImmediateInput
+        // （追加语义 :+ 逐字不变）。
+        val queued = state.copy(execution = TurnBoundary.enqueueImmediateInput(state.execution, msg))
         IO.pure(
           frozen(agentDef, resources, depth, parentRef, queued, replyTo, resumeAt, reason, retryCount, escalation)
         )

@@ -255,12 +255,8 @@ object AgentActor extends AgentCore with AgentSession:
     exec: ExecutionContext
   )
 
-  /** ImmediateInput → User message (blocks preferred, text fallback). */
-  private def immInputToMessage(imm: AgentCommand.ImmediateInput): Message =
-    (imm.blocks match
-      case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-      case _ => Message(MessageRole.User, Left(imm.text))
-    ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
+  // 2026-09-27 裁定（ORCH1-R7）：原 immInputToMessage（ImmediateInput → User message）
+  // 为四处逐字同形转换之一，已真删除并收口 TurnBoundary.immediateInputToMessage。
 
   /** UserInput (AgentCommand) → User message for inline continuation injection. */
   private def userCmdToMessage(ui: AgentCommand.UserInput): Message =
@@ -334,7 +330,7 @@ object AgentActor extends AgentCore with AgentSession:
         exec.pendingUserInputs match
           case (ui: AgentCommand.UserInput) :: tail if ui.replyTo.isEmpty => (List(ui), tail)
           case _ => (Nil, exec.pendingUserInputs)
-    val immMessages = imms.map(immInputToMessage)
+    val immMessages = imms.map(TurnBoundary.immediateInputToMessage)
     val userMsgs = injectedUsers.map(userCmdToMessage)
     // Full flush (2026-08-30, G1): EVERY event held during the compaction
     // window is injected together in the continuation round — the window is a
@@ -380,46 +376,14 @@ object AgentActor extends AgentCore with AgentSession:
     state: AgentState,
     drain: PostCompactDrain
   )(using ctx: ActorContext[AgentCommand]): IO[Unit] =
+    // 2026-09-27 裁定（ORCH1-R1 P1 对3 / ORCH1-R5）：两腿的判源守卫与帧参数
+    // 组装（含原调用点内的 2026-09-13/2026-09-15 日期注释）逐字收口
+    // TurnBoundary.emitForImmediateInput / emitForQueuedUserCommand。
     val immBubbles = drain.injectedImms.traverse_ { imm =>
-      injectionSourceFor(imm.fromUser, imm.source) match
-        case Some(src) =>
-          emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            imm.text,
-            src,
-            imm.eventType,
-            imm.sender,
-            imm.senderTeam,
-            imm.delivery,
-            // 气泡四段式统一批（2026-09-15）：PROJECT 段链首级随件转发（发送方所属
-            // 项目），② 级 = 本会话所属项目。
-            project = imm.project,
-            sessionProject = state.projectName
-          )
-        case None => IO.unit
+      TurnBoundary.emitForImmediateInput(resources, state, imm)
     }
     val userBubbles = drain.injectedUsers.traverse_ { ui =>
-      injectionSourceFor(ui.fromUser, ui.source) match
-        case Some(src) =>
-          emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            ui.text,
-            src,
-            ui.eventType,
-            ui.sender,
-            ui.senderTeam,
-            ui.delivery,
-            // 收件判别字段随 UserInput 同源转发（mailbadge 批 2026-09-13）。
-            intake = ui.intake,
-            // 气泡四段式统一批（2026-09-15）：PROJECT 段链首级/② 级（同上）。
-            project = ui.project,
-            sessionProject = state.projectName
-          )
-        case None => IO.unit
+      TurnBoundary.emitForQueuedUserCommand(resources, state, ui)
     }
     immBubbles *> userBubbles
 
