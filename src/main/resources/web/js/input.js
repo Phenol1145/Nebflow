@@ -173,12 +173,39 @@ export function registerSkillCommands(skills) {
 // ---------- Slash Command Handler ----------
 export function handleSlash(text) {
   const cmd = text.trim().split(/\s/)[0]; // 解析**先于**判定（D1-B：白名单按命令名判）
+  // /skill:name [input] —— 内联执行技能（2026-09-27 语法统一：$name 退役，/ 执行 · @ 引用）。
+  // 与 /clear /compact 同列的内置固定形式，不受封存白名单管辖（作者指令放行）。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    const rest = text.trim().slice(cmd.length).trim();
+    if (name) dispatchSkillInline(name, rest);
+    else renderSystemBubble(t('slash.skillUsage'));
+    return true;
+  }
   if (!slashAllowed(cmd)) return false; // SEALED: '/' is plain text（白名单两条除外）
   if (slashCommands[cmd] && slashCommands[cmd].run) {
     slashCommands[cmd].run(text);
     return true;
   }
   return false;
+}
+
+/** `/skill:name [input]` 内联执行（2026-09-27）——镜像 skill mode 发送路径（busy 入队）。 */
+function dispatchSkillInline(skillName, skillInput) {
+  const v = activeView;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  const text = skillInput || '';
+  const isBusy = state.busySessionIds.has(v.sessionId) || state.compactingSessionIds.has(v.sessionId);
+  if (isBusy) {
+    queueMessage(v, text, [], skillName);
+    return;
+  }
+  v.isSending = true;
+  if (v.sessionId) { state.turnExpecting[v.sessionId] = true; markRealUserTurn(v.sessionId); }
+  sendWs({ type: 'skill', skillName, input: text, sessionId: v.sessionId });
+  renderSkillBubble(skillName, text);
+  saveMsg({ type: 'user', text, attachments: [] });
+  setTimeout(() => { v.isSending = false; }, 300);
 }
 
 // ---------- Slash Autocomplete ----------
@@ -190,9 +217,23 @@ function updateSlashDropdown() {
     return;
   }
   const query = text.slice(1).toLowerCase();
-  activeView.slashMatches = Object.entries(slashCommands)
-    .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
-    .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+  // /skill: 前缀形态（2026-09-27 语法统一）：列出技能名册，拾取即内联执行
+  if (query.startsWith('skill:')) {
+    const sk = query.slice('skill:'.length);
+    activeView.slashMatches = Object.values(slashCommands)
+      .filter(info => info._skill && info._skillName)
+      .filter(info => sk === '' || String(info._skillName).toLowerCase().startsWith(sk))
+      .slice(0, 50)
+      .map(info => ({ cmd: '/skill:' + info._skillName, desc: typeof info.desc === 'function' ? info.desc() : (info.desc || ''), whenToUse: info.argumentHint || '', isSkill: true, source: info._source || '', skillName: info._skillName }));
+  } else {
+    activeView.slashMatches = Object.entries(slashCommands)
+      .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
+      .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+    // 发现式：键入 /sk… 时提示 /skill: 形态（空查询不提示——'/' 保持既有两条命令的列表）
+    if (query.length > 0 && 'skill:'.startsWith(query)) {
+      activeView.slashMatches.unshift({ cmd: '/skill:', desc: t('slash.skillUsage'), whenToUse: '', isSkill: true, source: '', skillName: '' });
+    }
+  }
   if (activeView.slashMatches.length === 0) {
     closeSlashDropdown();
     return;
@@ -265,6 +306,13 @@ function pickSlashCommand(index) {
   activeView.dom.input.style.height = 'auto';
   closeSlashDropdown();
   activeView.dom.input.focus();
+  // /skill: 条目（2026-09-27）：有名字 → 内联执行；仅形态提示 → 回填输入框续输参数。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    if (name) dispatchSkillInline(name, '');
+    else { activeView.dom.input.value = '/skill:'; updateSlashDropdown(); }
+    return;
+  }
   if (slashCommands[cmd] && slashCommands[cmd].run) slashCommands[cmd].run();
 }
 
@@ -278,11 +326,12 @@ function handleDeleteSkill(skillName) {
 }
 
 // ---------- Mention Autocomplete (mention-tokens 批 2, 2026-09-27) ----------
-// 输入框 CLI 化的前端半边：键入 @ / $ 时弹出提及补全面板，插入**后端可解析**的
-// token（后端权威解析 = InputMentions.scala，e884560；指针注入、不落模型），前端不预
+// 输入框 CLI 化的前端半边：键入 @ 时弹出提及补全面板，插入**后端可解析**的
+// token（后端权威解析 = InputMentions.scala；指针注入、不落模型），前端不预
 // 校验存在性（后端对未解析 token fail-open）。分词边界镜像后端：触发符前一字符不是
-// ASCII 词字符（挡邮箱 `user@x.com`，放行 CJK 紧邻 `看@project:x`），`\@` `\$` 转义
-// 不触发，空白与 CJK 句读终结符截断 token。
+// ASCII 词字符（挡邮箱 `user@x.com`，放行 CJK 紧邻 `看@project:x`），`\@` 与 `@@`
+// 转义不触发（2026-09-27 语法统一：$ 退役、技能并入 @skill:，@@// 为转义），
+// 空白与 CJK 句读终结符截断 token。
 //
 // 与斜杠面板互斥（共享 #slash-dropdown 壳）：文本以 / 开头 = 斜杠逻辑域（既有
 // updateSlashDropdown 管，本块零介入），其余文本归提及面板。两面板永不同时开：
@@ -292,8 +341,8 @@ function handleDeleteSkill(skillName) {
 //     模式位接管 ↑↓/Enter/Escape —— 能进提及块 ⇒ 文本非 / 开头 ⇒ 斜杠面板必已被
 //     先行监听器关掉，斜杠块不可达。
 // 触发源四种：
-//   `$技能`       → slashCommands 表中 _skill 条目（_skillName/desc/argumentHint，
-//                   零新管道；后端技能名精确匹配 ⇒ 前端过滤大小写敏感）；
+//   `@skill:`     → slashCommands 表中 _skill 条目（_skillName/desc/argumentHint，
+//                   零新管道；后端技能名精确匹配 ⇒ 前端过滤大小写敏感；执行侧 /skill: 见 handleSlash）；
 //   `@project:`   → GET /api/projects（nodeData.fetchProjects，30s 内存缓存，失败按
 //                   空名册缓存同窗防逐键重拉）；
 //   `@flow:`      → teamList 帧（ws.js 连接即请求 {type:'getTeams'}，本批前全仓无
@@ -366,22 +415,23 @@ function findMentionContext(text, caret) {
     const ch = text[i];
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') return null;
     if (MENTION_TERMINATORS.indexOf(ch) >= 0) return null; // CJK 句读截断（镜像后端）
-    if (ch === '@' || ch === '$') break;
+    if (ch === '@') break;
     i--;
   }
   if (i < 0) return null;
   if (i > 0) {
     const prev = text[i - 1];
-    if (prev === '\\') return null;           // \@ \$ 转义不触发（镜像后端）
+    if (prev === '\\') return null;           // \@ 转义不触发（镜像后端）
+    if (prev === '@') return null;            // @@ 转义不触发（2026-09-27，镜像后端）
     if (isMentionWordChar(prev)) return null; // 词中触发拦下（邮箱 user@x.com）
   }
   const rest = text.slice(i + 1, caret);
-  if (text[i] === '$') return { kind: 'skill', tokenStart: i, query: rest };
   // 类型前缀必须精确（镜像 classify 的大小写敏感 startsWith）
   if (rest.startsWith('project:')) return { kind: 'project', tokenStart: i, query: rest.slice('project:'.length) };
   if (rest.startsWith('flow:')) return { kind: 'flow', tokenStart: i, query: rest.slice('flow:'.length) };
+  if (rest.startsWith('skill:')) return { kind: 'skill', tokenStart: i, query: rest.slice('skill:'.length) };
   // 裸 @ / 类型前缀的部分输入 → 前缀菜单（发现式；`@词` 等裸形态不触发，零打扰）
-  if (rest === '' || 'project:'.startsWith(rest) || 'flow:'.startsWith(rest)) {
+  if (rest === '' || 'project:'.startsWith(rest) || 'flow:'.startsWith(rest) || 'skill:'.startsWith(rest)) {
     return { kind: 'menu', tokenStart: i, query: rest };
   }
   // 路径形态：@/ @./ @~/ 或含 / 的相对路径（镜像 classify 的 contains('/') || startsWith('@~')）
@@ -399,11 +449,11 @@ function buildMentionItems(ctx) {
       .filter(info => ctx.query === '' || info._skillName.startsWith(ctx.query))
       .slice(0, MENTION_MAX_ITEMS)
       .map(info => ({
-        label: '$' + info._skillName,
+        label: '@skill:' + info._skillName,
         detail: typeof info.desc === 'function' ? info.desc() : (info.desc || ''),
         hint: info.argumentHint || '',
         badge: t('slash.mentionSkill'),
-        insert: '$' + info._skillName,
+        insert: '@skill:' + info._skillName,
         space: true
       }));
   }
@@ -443,6 +493,9 @@ function buildMentionItems(ctx) {
     }
     if ('flow:'.startsWith(ctx.query)) {
       items.push({ label: '@flow:', detail: t('slash.mentionFlowHint'), hint: '', badge: t('slash.mentionFlow'), insert: '@flow:', space: false });
+    }
+    if ('skill:'.startsWith(ctx.query)) {
+      items.push({ label: '@skill:', detail: t('slash.mentionSkillHint'), hint: '', badge: t('slash.mentionSkill'), insert: '@skill:', space: false });
     }
   }
   // 文件形态：file 态恒显示；menu 态仅在 rest 为空或已是 ./ ~/ 的前缀时出现。

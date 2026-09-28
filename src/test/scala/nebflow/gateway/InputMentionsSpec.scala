@@ -15,19 +15,19 @@ class InputMentionsSpec extends CatsEffectSuite:
     project = _ => IO.pure(None),
     flow = _ => IO.pure(None),
     session = _ => IO.pure(None),
-    skill = _ => IO.pure(None),
+    skill = _ => IO.pure(None)
   )
 
   private def lookupsWith(
     project: Map[String, (String, String)] = Map.empty,
-    skill: Map[String, (String, String)] = Map.empty,
+    skill: Map[String, (String, String)] = Map.empty
   ): InputMentions.Lookups =
     InputMentions.Lookups(
       file = _ => IO.pure(None),
       project = name => IO.pure(project.get(name.toLowerCase)),
       flow = _ => IO.pure(None),
       session = _ => IO.pure(None),
-      skill = name => IO.pure(skill.get(name)),
+      skill = name => IO.pure(skill.get(name))
     )
 
   test("无提及文本逐字节原样"):
@@ -43,35 +43,64 @@ class InputMentionsSpec extends CatsEffectSuite:
     assertEquals(ms.collect { case f: InputMentions.FileMention => f.path }, List("src/main/core"))
 
   test("分词：尾随标点剥离"):
-    val ms = InputMentions.tokenize("总结 @project:demo。然后 $review-skill！")
+    val ms = InputMentions.tokenize("总结 @project:demo。然后 @skill:review-skill！")
     assertEquals(ms.collect { case p: InputMentions.ProjectMention => p.name }, List("demo"))
     assertEquals(ms.collect { case s: InputMentions.SkillMention => s.name }, List("review-skill"))
 
   test("分词：CJK 句读截断（无空格中文文本不吞句）"):
-    val ms = InputMentions.tokenize("压缩@project:demo。然后看 $review-skill！收尾 @src/a.scala，完")
+    val ms = InputMentions.tokenize("压缩@project:demo。然后看 @skill:review-skill！收尾 @src/a.scala，完")
     assertEquals(ms.collect { case p: InputMentions.ProjectMention => p.name }, List("demo"))
-    assertEquals(ms.collect { case s: InputMentions.SkillMention => s.name }, List("$review-skill".drop(1)))
+    assertEquals(ms.collect { case s: InputMentions.SkillMention => s.name }, List("review-skill"))
     assertEquals(ms.collect { case f: InputMentions.FileMention => f.path }, List("src/a.scala"))
 
-  test("分词：转义 \\@ \\$ 不解析"):
-    assertEquals(InputMentions.tokenize("这是 \\@project:x 和 \\$skill"), List.empty[InputMentions.Mention])
+  test("分词：反斜杠转义 \\@ 不解析；$ 已退役全惰性"):
+    assertEquals(InputMentions.tokenize("这是 \\@project:x"), List.empty[InputMentions.Mention])
+    assertEquals(InputMentions.tokenize("用 $review 和 $code/review 走查"), List.empty[InputMentions.Mention])
 
-  test("分词：$ 技能支持命名空间形态"):
-    val ms = InputMentions.tokenize("用 $code/review 走查")
+  test("分词：@@ 转义不解析（双 @ 起首的 token 整体不产生提及）"):
+    assertEquals(InputMentions.tokenize("看 @@project:x 和 @@src/file"), List.empty[InputMentions.Mention])
+
+  test("分词：@skill: 支持命名空间形态"):
+    val ms = InputMentions.tokenize("用 @skill:code/review 走查")
     assertEquals(ms.collect { case s: InputMentions.SkillMention => s.name }, List("code/review"))
 
   test("resolve：指针块追加尾部并按指针行去重"):
     val lk = lookupsWith(
       project = Map("nebflow" -> (("Nebflow", "/ws/nebflow"))),
-      skill = Map("review" -> (("review", "审阅技能"))),
+      skill = Map("review" -> (("review", "审阅技能")))
     )
-    val t = "总结 @project:nebflow 与 @project:nebflow 的差异，用 $review 走查"
+    val t = "总结 @project:nebflow 与 @project:nebflow 的差异，用 @skill:review 走查"
     InputMentions.resolve(t, lk).map { case (out, unres) =>
       assertEquals(unres, List.empty[InputMentions.Mention])
       assertEquals(
         out.drop(t.length),
         "\n\n[提及解析]\n[引用: 项目 · Nebflow · /ws/nebflow]\n[技能: review — 审阅技能]"
       )
+    }
+
+  test("resolve：@@ 转义还原为单 @ 且零指针（含与真提及共存）"):
+    val lk = lookupsWith(project = Map("demo" -> (("demo", "/ws/demo"))))
+    val t = "看 @@types/node 包和 @project:demo"
+    val reduced = "看 @types/node 包和 @project:demo"
+    InputMentions.resolve(t, lk).map { case (out, unres) =>
+      assertEquals(unres, List.empty[InputMentions.Mention])
+      assert(out.startsWith(reduced), s"转义还原失败: $out")
+      assert(!out.contains("@@"), "交付文本不应再含双 @")
+      assertEquals(out.drop(reduced.length), "\n\n[提及解析]\n[引用: 项目 · demo · /ws/demo]")
+    }
+
+  test("resolve：仅转义无提及时也还原（无指针块）"):
+    val t = "联系 @@alice 处理"
+    InputMentions.resolve(t, noneLookups).map { case (out, unres) =>
+      assertEquals(out, "联系 @alice 处理")
+      assertEquals(unres, List.empty[InputMentions.Mention])
+    }
+
+  test("resolve：// 转义仅作用于开头，还原为单斜杠（URL 不受影响）"):
+    InputMentions.resolve("//compact 是什么", noneLookups).map { case (out, _) =>
+      assertEquals(out, "/compact 是什么")
+    } *> InputMentions.resolve("看 https://example.com/x", noneLookups).map { case (out, _) =>
+      assertEquals(out, "看 https://example.com/x")
     }
 
   test("resolve：fail-open 全未解析则文本逐字节不变且回报清单"):
@@ -87,7 +116,7 @@ class InputMentionsSpec extends CatsEffectSuite:
       project = _ => IO.pure(None),
       flow = _ => IO.pure(None),
       session = _ => IO.pure(None),
-      skill = _ => IO.pure(None),
+      skill = _ => IO.pure(None)
     )
     val t = "看 @src/x.scala"
     InputMentions.resolve(t, boom).map { case (out, unres) =>
@@ -111,3 +140,4 @@ class InputMentionsSpec extends CatsEffectSuite:
     lk("/src/main/A.scala").map { hit =>
       assertEquals(hit.map(p => p.replace('\\', '/').endsWith("/src/main/A.scala")), Some(true))
     }
+end InputMentionsSpec

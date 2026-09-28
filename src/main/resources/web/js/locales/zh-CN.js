@@ -1131,7 +1131,7 @@ export default {
   'slash.confirmDelete': '确定要删除技能「{skill}」吗？此操作不可撤销。',
   'slash.skillDeleted': '技能「{skill}」已删除',
   'slash.skillDeleteFailed': '删除技能「{skill}」失败：可能不是用户级技能',
-  // 提及补全面板（mention-tokens 批 2）—— @/$ token 补全的徽章与形态说明（与 en.js 成对）
+  // 提及补全面板（mention-tokens 批 2；2026-09-27 语法统一：$ 退役，技能并入 @skill:）—— @token 补全的徽章与形态说明（与 en.js 成对）
   'slash.mentionTitle': '提及',
   'slash.mentionProject': '项目',
   'slash.mentionFlow': '流程',
@@ -1139,6 +1139,8 @@ export default {
   'slash.mentionSkill': '技能',
   'slash.mentionProjectHint': '引用项目（后跟项目名，如 @project:名称）',
   'slash.mentionFlowHint': '引用流程（后跟流程名，如 @flow:名称）',
+  'slash.mentionSkillHint': '引用技能（后跟技能名，如 @skill:名称）',
+  'slash.skillUsage': '用法：/skill:技能名 [可选输入]',
   'slash.mentionFileRoot': '会话工作区根目录下的路径',
   'slash.mentionFileCwd': '会话工作区根目录下的相对路径',
   'slash.mentionFileHome': '用户主目录（home）下的路径',
