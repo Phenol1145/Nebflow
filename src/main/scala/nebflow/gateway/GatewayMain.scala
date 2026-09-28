@@ -9,6 +9,7 @@ import nebflow.actor.{AgentCommand, RootAgentIdentity, contextWindow}
 import nebflow.agent.*
 import nebflow.bridge.*
 import nebflow.core.*
+import nebflow.core.boot.JvmRequirement
 import nebflow.core.daemon.{DaemonService, DaemonStore}
 import nebflow.core.hooks.*
 import nebflow.core.mcp.*
@@ -365,7 +366,7 @@ object GatewayMain extends IOApp:
     // Team #11 ④: log which Windows toolchain pieces (Git Bash / rg)
     // resolved at boot — missing pieces must be loud up front, not discovered
     // later inside a failing tool call. No-op off Windows.
-    nebflow.core.WindowsDepProbe.warnIfMissing *>
+    nebflow.core.boot.WindowsDepProbe.warnIfMissing *>
       // Read port from config first, then run the boot entry gate on that port
       GatewayConfig.load.flatMap { cfg =>
         entryGate(cfg) *> GatewayConfig.load.flatMap { cfg =>
@@ -1476,7 +1477,7 @@ object GatewayMain extends IOApp:
                                                             }
                                                           _ <-
                                                             if GatewayConfig.noBrowser ||
-                                                              nebflow.core.HeadlessMode.enabled
+                                                              nebflow.shared.HeadlessMode.enabled
                                                             then IO.unit
                                                             else openBrowser(url)
                                                           // --- Background init: skills dir, MCP servers ---

@@ -1403,7 +1403,7 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
      * P0-1（spec §2.3）：MCP / ScriptTool 面命中审批门且需出卡 —— 携带门判定结果供
      * 卡面构造（tier / declared / hostBanner / 遮蔽摘要）与审计使用。
      */
-    case AskMcp(outcome: nebflow.core.McpGateOutcome)
+    case AskMcp(outcome: nebflow.core.mcp.McpGateOutcome)
 
   private def permissionDecision(
     resources: SharedResources,
@@ -1416,9 +1416,9 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
       //
       // 面判定为 None（内置工具：Read/Write/Edit/Bash/Curl/Pop/…) ⇒ 走原路径**逐字不变**
       // —— `isReversible` 函数体与调用形状零改动（验收 A1-8 零回归的机械保证）。
-      nebflow.core.McpToolGate.surfaceOf(call.name) match
+      nebflow.core.mcp.McpToolGate.surfaceOf(call.name) match
         case Some(ref) =>
-          val outcome = nebflow.core.McpToolGate.decide(ref, call.input, mode, sessionId)
+          val outcome = nebflow.core.mcp.McpToolGate.decide(ref, call.input, mode, sessionId)
           auditMcpGate(outcome, mode, sessionId) *>
             IO.pure(
               if outcome.allowed then PermissionDecision.Allow else PermissionDecision.AskMcp(outcome)
@@ -1436,13 +1436,13 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
    * 零新存储、零新事件类型）。best-effort：审计失败绝不改变判定。
    */
   private def auditMcpGate(
-    outcome: nebflow.core.McpGateOutcome,
+    outcome: nebflow.core.mcp.McpGateOutcome,
     mode: nebflow.core.SafetyMode,
     sessionId: String
   ): IO[Unit] =
     nebflow.shared.NebflowLogger
       .forName("nebflow.audit")
-      .info(nebflow.core.McpToolGate.auditLine(outcome, mode, sessionId))
+      .info(nebflow.core.mcp.McpToolGate.auditLine(outcome, mode, sessionId))
       .handleErrorWith(_ => IO.unit)
 
   private def askUserPermission(
@@ -1624,7 +1624,7 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
   /** mcpPermission 卡：等待用户批答（无超时）。 */
   private def askMcpPermission(
     call: ToolCall,
-    outcome: nebflow.core.McpGateOutcome,
+    outcome: nebflow.core.mcp.McpGateOutcome,
     state: AgentState,
     resources: SharedResources,
     answerRef: Ref[IO, Option[cats.effect.Deferred[IO, nebflow.shared.McpPermissionAnswer]]],
@@ -1641,7 +1641,7 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
           val deferred = cats.effect.Deferred.unsafe[IO, nebflow.shared.McpPermissionAnswer]
           (
             Some(deferred),
-            IO(nebflow.core.McpToolGate.cardPayload(outcome, currentMode)).flatMap { cardJson =>
+            IO(nebflow.core.mcp.McpToolGate.cardPayload(outcome, currentMode)).flatMap { cardJson =>
               val sourceAgent = toolCtx.agentDef.map(_.name).getOrElse("unknown")
               val sourceSession = state.sessionId.getOrElse("")
               val rootSessionId =

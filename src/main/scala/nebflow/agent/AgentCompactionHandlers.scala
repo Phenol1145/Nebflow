@@ -17,6 +17,7 @@ import nebflow.shared.*
  * 默认参数原样),全部调用点零改动;idle / processing / pipeLlmCall / finishTurn /
  * startDirectCompaction / logAgentEvent 等留驻原处,经 import AgentActor.* 引用。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentCompactionHandlers.handleCompactResponse / handleCompactFailure / emitAbandonedCompaction / dropCompactionScratch / handleAskComplete / isAskReminder / handleTriggerCompaction / handleEmptyResponse；原注保留存证。
 private[agent] object AgentCompactionHandlers:
   import nebflow.agent.AgentActor.*
 
@@ -24,6 +25,12 @@ private[agent] object AgentCompactionHandlers:
   // Compact response handlers
   // ============================================================
 
+  // 压缩/ask 收尾 handler 族已整体迁至 agent/AgentCompactionHandlers.scala(行为保持
+  // 重构,2026-09-25):handleCompactResponse / handleCompactFailure /
+  // emitAbandonedCompaction / dropCompactionScratch / handleAskComplete / isAskReminder /
+  // handleTriggerCompaction / handleEmptyResponse 的实现都在那边(方法体逐字未动);
+  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentCompactionHandlers.handleCompactResponse；原注保留存证。
   private[agent] def handleCompactResponse(
     agentDef: AgentDef,
     resources: SharedResources,
@@ -206,7 +213,7 @@ private[agent] object AgentCompactionHandlers:
           }
           .handleErrorWith(e => ctx.self ! AgentCommand.CompactionComplete(Left(e.getMessage)))
       )
-    yield processing(agentDef, resources, depth, parentRef, state)
+    yield AgentProcessing.processing(agentDef, resources, depth, parentRef, state)
 
   end handleCompactResponse
 
@@ -239,7 +246,7 @@ private[agent] object AgentCompactionHandlers:
         .fold(IO.unit)(d => d.complete(Left(err)).void.handleErrorWith(_ => IO.unit))
       result <- pending.flatMap(_.replyTo) match
         case Some(replyTo) =>
-          finishTurn(
+          AgentFinishTurn.finishTurn(
             agentDef,
             resources,
             depth,
@@ -254,8 +261,8 @@ private[agent] object AgentCompactionHandlers:
           )
         case None =>
           if pending.exists(!_.resumeAfterCompact) then
-            IO.pure(idle(agentDef, resources, depth, parentRef, failedState))
-          else IO.pure(processing(agentDef, resources, depth, parentRef, failedState))
+            IO.pure(AgentIdle.idle(agentDef, resources, depth, parentRef, failedState))
+          else IO.pure(AgentProcessing.processing(agentDef, resources, depth, parentRef, failedState))
     yield result
     end for
   end handleCompactFailure
@@ -337,7 +344,7 @@ private[agent] object AgentCompactionHandlers:
       val restoredMessages =
         if originalMessages.size == state.messages.size then state.messages.dropRight(1)
         else originalMessages
-      idle(
+      AgentIdle.idle(
         agentDef,
         resources,
         depth,
@@ -382,7 +389,7 @@ private[agent] object AgentCompactionHandlers:
             state.sessionId
           ).handleErrorWith(_ => IO.unit)
         )
-      yield idle(agentDef, resources, depth, parentRef, state)
+      yield AgentIdle.idle(agentDef, resources, depth, parentRef, state)
     else
       val backoffOk =
         if state.compactionFailures == 0 then true
@@ -392,7 +399,7 @@ private[agent] object AgentCompactionHandlers:
       if !backoffOk then
         val err = s"Compaction retry backed off (${state.compactionFailures} failures)"
         replyDeferred.fold(IO.unit)(d => d.complete(Left(err)).void.handleErrorWith(_ => IO.unit)) *>
-          IO.pure(idle(agentDef, resources, depth, parentRef, state))
+          IO.pure(AgentIdle.idle(agentDef, resources, depth, parentRef, state))
       else if state.compactionFailures >= config.circuitBreakerMax then
         val err = s"Compaction circuit breaker open after ${state.compactionFailures} attempts"
         for
@@ -405,7 +412,7 @@ private[agent] object AgentCompactionHandlers:
               state.sessionId
             ).handleErrorWith(_ => IO.unit)
           )
-        yield idle(agentDef, resources, depth, parentRef, state)
+        yield AgentIdle.idle(agentDef, resources, depth, parentRef, state)
       else
         startDirectCompaction(
           agentDef,
@@ -414,7 +421,7 @@ private[agent] object AgentCompactionHandlers:
           parentRef,
           state,
           None,
-          (ad, r, d, p, s) => processing(ad, r, d, p, s),
+          (ad, r, d, p, s) => AgentProcessing.processing(ad, r, d, p, s),
           mode,
           resumeAfterCompact,
           postCompactInstruction
@@ -445,7 +452,7 @@ private[agent] object AgentCompactionHandlers:
     if isContextError then
       logAgentEvent(agentDef, depth, state.sessionId, state.sessionName, "context-exceeded", s"stopReason=$stopReason")
       if state.pendingCompaction.isDefined || state.compactionFailures >= CompactConfig().circuitBreakerMax then
-        finishTurn(
+        AgentFinishTurn.finishTurn(
           agentDef,
           resources,
           depth,
@@ -467,7 +474,7 @@ private[agent] object AgentCompactionHandlers:
           parentRef,
           state,
           replyTo,
-          (ad, r, d, p, s) => processing(ad, r, d, p, s),
+          (ad, r, d, p, s) => AgentProcessing.processing(ad, r, d, p, s),
           "full"
         )
       end if
@@ -479,7 +486,7 @@ private[agent] object AgentCompactionHandlers:
             .wsSend(Json.obj("type" -> "maxTokens".asJson, "sessionId" -> state.sessionId.asJson))
             .handleErrorWith(_ => IO.unit)
         )
-        result <- finishTurn(
+        result <- AgentFinishTurn.finishTurn(
           agentDef,
           resources,
           depth,
@@ -519,7 +526,7 @@ private[agent] object AgentCompactionHandlers:
               state.sessionId
             ).handleErrorWith(_ => IO.unit)
           )
-          result <- pipeLlmCall(agentDef, resources, depth, parentRef, stateForRetry, replyTo)
+          result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, stateForRetry, replyTo)
         yield result
       else
         val errMsg =
@@ -539,7 +546,7 @@ private[agent] object AgentCompactionHandlers:
                 emitSessionBusy(state.wsSend, sid, busy = false)
             )
           }
-        yield idle(agentDef, resources, depth, parentRef, state)
+        yield AgentIdle.idle(agentDef, resources, depth, parentRef, state)
       end if
     end if
   end handleEmptyResponse

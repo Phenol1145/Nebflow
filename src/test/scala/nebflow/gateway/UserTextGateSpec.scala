@@ -38,6 +38,7 @@ class UserTextGateSpec extends FunSuite:
 
   private val hubFile =
     new java.io.File(repoRoot, "src/main/scala/nebflow/agent/InteractionHub.scala")
+
   // 严格DAG第⑥步第三批A裁定(2026-09-27):InteractionHubCommand(含 Answered)随 dwfq-5c7a31ea-1
   // R-B 移入 nebflow.actor,源码哨兵随迁新增此读面(先例 1c4cbb0/④路径钉串)。
   private val hubCommandFile =
@@ -148,8 +149,21 @@ class UserTextGateSpec extends FunSuite:
     val start = wsRoutesCode.indexOf("private def dispatchUserText")
     assert(start >= 0, "普通消息入队路径 dispatchUserText 丢失（越界删除）")
     val body = wsRoutesCode.substring(start)
+    // 2026-09-28 裁定（ORCH4-R5；编号纪律 `ORCH4-P5`，承 R-B 先例）：pin 随 mention 批（e884560）实参名
+    // content→contentForAgent 更新；哨兵原意（文本走唯一入队路径投 ImmediateInput）
+    // 未变，断言语义零变。派生关系已在 main 现场复核：dispatchUserText 体
+    // （WebSocketRoutes.scala:1751-1771；HEAD :1735-1755，本批根构造段插入后 +16）
+    // 经 InputMentions.resolve(content, …) 得
+    // contentForAgent（记录面仍落 UiMessage.User(content, …) 原文；投递面投增强文本），
+    // 末步 `ensureAgent(sessionId)(ref => ref ! AgentCommand.ImmediateInput(
+    // contentForAgent, fromUser = fromUser))`（:1770；HEAD :1754，+16）——唯一入队路径与投放形态不变。
+    // ⚠ 行号订正（2026-09-28 审计 Finding-A）：本注先前写作「HEAD :1744-1764 / :1763 / +7」——
+    // 那是**当时的工作区**坐标被误标成 HEAD；经 `git show HEAD:…WebSocketRoutes.scala` 实测
+    // 真值 = `private def dispatchUserText` @:1735、ImmediateInput 行 @:1754，故漂移为 **+16**
+    // （非 +7）。现按本批「现行坐标（HEAD :原号）」双记口径订正；同口径已全量复核本批
+    // 全部 HEAD 标注（24 条，实跑：23 条真值通过，余 1 条为复核脚本自设的猜测坐标）。
     assert(
-      body.contains("AgentCommand.ImmediateInput(content, fromUser = fromUser)"),
+      body.contains("AgentCommand.ImmediateInput(contentForAgent, fromUser = fromUser)"),
       "dispatchUserText 不再投 ImmediateInput —— 输入框文本的「普通消息」承接被改坏"
     )
   }

@@ -139,8 +139,12 @@ object AgentActor extends AgentCore with AgentSession:
     case FreezeReason.RestartRecovery => "restart-recovery"
     case FreezeReason.Loop => "loop"
 
-  /** Overload-class reasons: provider saturated, backoff can heal it. */
-  private def isOverloadClass(r: FailoverReason): Boolean = AgentActor.isOverloadReason(r)
+  // 2026-09-28 裁定（ORCH5-P3 / ORCH5-R1：死码清册 ⑤ B3 登记项）——本处原 `isOverloadClass`
+  // （B3 收面期新增的同对象别名）已**整删**：零引用实证 `git grep -n -i overloadclass`
+  // 全仓唯一命中 = 该定义行自身（HEAD :143）；其委托目标 `AgentActor.isOverloadReason`
+  // 仍被 :41 / :54 使用，属活成员，未动。随删的产出物 = 该成员的 scaladoc 一行
+  // （原文迁置，逐字保留，不得随删消失）：Overload-class reasons: provider saturated,
+  // backoff can heal it.
 
   private[agent] val logger = NebflowLogger.forName("nebflow.agent")
 
@@ -255,12 +259,8 @@ object AgentActor extends AgentCore with AgentSession:
     exec: ExecutionContext
   )
 
-  /** ImmediateInput → User message (blocks preferred, text fallback). */
-  private def immInputToMessage(imm: AgentCommand.ImmediateInput): Message =
-    (imm.blocks match
-      case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-      case _ => Message(MessageRole.User, Left(imm.text))
-    ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
+  // 2026-09-27 裁定（ORCH1-R7）：原 immInputToMessage（ImmediateInput → User message）
+  // 为四处逐字同形转换之一，已真删除并收口 TurnBoundary.immediateInputToMessage。
 
   /** UserInput (AgentCommand) → User message for inline continuation injection. */
   private def userCmdToMessage(ui: AgentCommand.UserInput): Message =
@@ -334,7 +334,7 @@ object AgentActor extends AgentCore with AgentSession:
         exec.pendingUserInputs match
           case (ui: AgentCommand.UserInput) :: tail if ui.replyTo.isEmpty => (List(ui), tail)
           case _ => (Nil, exec.pendingUserInputs)
-    val immMessages = imms.map(immInputToMessage)
+    val immMessages = imms.map(TurnBoundary.immediateInputToMessage)
     val userMsgs = injectedUsers.map(userCmdToMessage)
     // Full flush (2026-08-30, G1): EVERY event held during the compaction
     // window is injected together in the continuation round — the window is a
@@ -380,46 +380,14 @@ object AgentActor extends AgentCore with AgentSession:
     state: AgentState,
     drain: PostCompactDrain
   )(using ctx: ActorContext[AgentCommand]): IO[Unit] =
+    // 2026-09-27 裁定（ORCH1-R1 P1 对3 / ORCH1-R5）：两腿的判源守卫与帧参数
+    // 组装（含原调用点内的 2026-09-13/2026-09-15 日期注释）逐字收口
+    // TurnBoundary.emitForImmediateInput / emitForQueuedUserCommand。
     val immBubbles = drain.injectedImms.traverse_ { imm =>
-      injectionSourceFor(imm.fromUser, imm.source) match
-        case Some(src) =>
-          emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            imm.text,
-            src,
-            imm.eventType,
-            imm.sender,
-            imm.senderTeam,
-            imm.delivery,
-            // 气泡四段式统一批（2026-09-15）：PROJECT 段链首级随件转发（发送方所属
-            // 项目），② 级 = 本会话所属项目。
-            project = imm.project,
-            sessionProject = state.projectName
-          )
-        case None => IO.unit
+      TurnBoundary.emitForImmediateInput(resources, state, imm)
     }
     val userBubbles = drain.injectedUsers.traverse_ { ui =>
-      injectionSourceFor(ui.fromUser, ui.source) match
-        case Some(src) =>
-          emitInjectedUserEvent(
-            resources,
-            state.wsSend,
-            state.sessionId,
-            ui.text,
-            src,
-            ui.eventType,
-            ui.sender,
-            ui.senderTeam,
-            ui.delivery,
-            // 收件判别字段随 UserInput 同源转发（mailbadge 批 2026-09-13）。
-            intake = ui.intake,
-            // 气泡四段式统一批（2026-09-15）：PROJECT 段链首级/② 级（同上）。
-            project = ui.project,
-            sessionProject = state.projectName
-          )
-        case None => IO.unit
+      TurnBoundary.emitForQueuedUserCommand(resources, state, ui)
     }
     immBubbles *> userBubbles
 
@@ -701,7 +669,7 @@ object AgentActor extends AgentCore with AgentSession:
       // built-not-run (2026-08-30 probe: setup-time self-send silently
       // dropped), so it MUST be sequenced into the factory's IO.
       (ctx.self ! AgentCommand.RecoverPersistedQueues) *> IO.pure(
-        idle(
+        AgentIdle.idle(
           agentDef,
           resources,
           depth,
@@ -763,7 +731,7 @@ object AgentActor extends AgentCore with AgentSession:
     // （depth>0）的放行记忆同样必须随其终态释放（否则 map 只增不减）。
     // 只清本会话键（`SessionApprovals.clear(sessionId)` 幂等）。
     val clearMcpSessionApprovals =
-      IO.delay(nebflow.core.SessionApprovals.clear(state.sessionId.getOrElse("")))
+      IO.delay(nebflow.core.mcp.SessionApprovals.clear(state.sessionId.getOrElse("")))
         .handleErrorWith(_ => IO.unit)
     if state.depth == 0 then
       val hookCtx = buildHookContext(state)
@@ -772,21 +740,6 @@ object AgentActor extends AgentCore with AgentSession:
     else clearMcpSessionApprovals
 
   end fireLifecycleStopHooks
-
-  /**
-   * #391 机制 E：restart/Stop 联动——杀该 session 全部 shell 进程树（前台 +
-   * 后台 runProcess 注册的 OS 进程）+ 注销 BgTaskRegistry + WS cancelled 通知。
-   *
-   * B9 残留根因链修复：AgentControl restart → Stop → cancelCurrentTurn 只取消
-   * turn fiber（cats-effect Fiber），shell.scala 全程 IO.blocking 取消不中断线程，
-   * bracket release 的 killProcessTree 永不执行 → bash/Chrome/helpers 进程树残留
-   * 需手动 pkill。killSessionProcesses 直接杀注册的进程树，断掉这条链。
-   * 不碰：其他 session 的进程、JVM 自身（ProcessTree 只操作注册的 ProcessHandle）。
-   */
-  private[agent] def killSessionShellProcesses(state: AgentState): IO[Unit] =
-    // 抽公共收殓函数（孤儿后台任务收割 D1）：杀进程树 + 注销 BgTaskRegistry +
-    // WS cancelled 帧三件事合一，与 NodeEngine 终态出口共用（去重）。
-    BgTaskRegistry.reclaimSession(state.sessionId, state.wsSend, state.rootSessionId)
 
   /**
    * Build the "askUser" WS payload for the frontend. When the question comes
@@ -925,177 +878,17 @@ object AgentActor extends AgentCore with AgentSession:
   // Idle state
   // ============================================================
 
-  // idle 态已整体迁至 agent/AgentIdle.scala(行为保持重构,2026-09-25):idle
-  // 行为及其唯一消费的注入判源助手 inferInjectionSource 的实现都在那边
-  // (方法体逐字未动);此处保留同名委托 def(签名原样),调用点零改动。
-  private[agent] def idle(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState
-  )(using ctx: ActorContext[AgentCommand]): Behavior[AgentCommand] =
-    AgentIdle.idle(agentDef, resources, depth, parentRef, state)
   // ============================================================
   // Processing state
   // ============================================================
 
-  // processing 域已整体迁至 agent/AgentProcessing.scala(行为保持重构,2026-09-25):
-  // processing 行为、mail 检查 / supervisor 重启助手与两枚 dispatch 管道的实现
-  // 都在那边(方法体逐字未动,详见 AgentProcessing.scala 头注);此处保留同名
-  // 委托 def(签名与默认参数原样),调用点零改动。hasUsedMail / rollbackLastToolCall
-  // 为私有单消费助手,随实现迁走、不留委托。
-  private[agent] def processing(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    pending: List[AgentCommand] = Nil
-  )(using ctx: ActorContext[AgentCommand]): Behavior[AgentCommand] =
-    AgentProcessing.processing(agentDef, resources, depth, parentRef, state, pending)
   // ============================================================
   // Mail check — flow agents must call Mail before finishing
   // ============================================================
 
-  private[agent] def handleMissingMail(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    result: ConsumeResult
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentProcessing.handleMissingMail(agentDef, resources, depth, parentRef, state, replyTo, result)
-
   // ============================================================
   // Supervisor restart helpers
   // ============================================================
-
-  private[agent] def restartStateFor(
-    level: RestartLevel,
-    state: AgentState,
-    resources: SharedResources
-  ): IO[AgentState] = AgentProcessing.restartStateFor(level, state, resources)
-
-  // turn 收尾族已整体迁至 agent/AgentFinishTurn.scala(行为保持重构,2026-09-25):
-  // handleLlmCompleteBranch / finishTurn / finishTurnCont / markTeamBusy /
-  // markTeamIdle / fullyIdle / emitDequeuedWs 的实现都在那边(方法体逐字未动);
-  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。pipeLlmCall /
-  // pipeToolExecutions 后随 processing 域迁至 agent/AgentProcessing.scala(同日,
-  // 见上方 processing 委托处注释)。
-  private[agent] def handleLlmCompleteBranch(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    result: ConsumeResult,
-    pending: List[AgentCommand]
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentFinishTurn.handleLlmCompleteBranch(agentDef, resources, depth, parentRef, state, replyTo, result, pending)
-
-  private[agent] def finishTurn(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    text: String,
-    thinking: Option[String] = None,
-    thinkingSignature: Option[String] = None,
-    textAlreadyStreamed: Boolean = false,
-    model: Option[String] = None
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentFinishTurn.finishTurn(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      replyTo,
-      text,
-      thinking,
-      thinkingSignature,
-      textAlreadyStreamed,
-      model
-    )
-
-  private[agent] def finishTurnCont(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    newMessages: List[Message],
-    text: String,
-    model: Option[String],
-    thinking: Option[String],
-    thinkingSignature: Option[String],
-    textStreamed: Boolean,
-    isSubagent: Boolean
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentFinishTurn.finishTurnCont(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      replyTo,
-      newMessages,
-      text,
-      model,
-      thinking,
-      thinkingSignature,
-      textStreamed,
-      isSubagent
-    )
-
-  private[agent] def markTeamBusy(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    AgentFinishTurn.markTeamBusy(agentDef, sid)
-
-  private[agent] def markTeamIdle(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    AgentFinishTurn.markTeamIdle(agentDef, sid)
-
-  private[agent] def fullyIdle(
-    sid: String,
-    state: AgentState,
-    resources: SharedResources,
-    skipSelfStatus: Boolean = false
-  ): IO[Boolean] = AgentFinishTurn.fullyIdle(sid, state, resources, skipSelfStatus)
-
-  private[agent] def emitDequeuedWs(wsSend: Json => IO[Unit], sessionId: String, itemId: String): IO[Unit] =
-    AgentFinishTurn.emitDequeuedWs(wsSend, sessionId, itemId)
-
-  // ============================================================
-  // Pipe wrappers
-  // ============================================================
-
-  private[agent] def pipeLlmCall(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    cause: DispatchCause = DispatchCause.Gated
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, state, replyTo, cause)
-
-  private[agent] def pipeToolExecutions(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    result: ConsumeResult,
-    replyTo: Option[ActorRef[AgentEvent]]
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentProcessing.pipeToolExecutions(agentDef, resources, depth, parentRef, state, result, replyTo)
 
   // processing 域迁移(2026-09-25)配套:AgentCore 的 pipeLlmCall / pipeToolExecutions
   // 是 protected,super. 只在本对象(继承 AgentCore)内合法;AgentProcessing 不继承
@@ -1242,155 +1035,6 @@ object AgentActor extends AgentCore with AgentSession:
       .evalWithSkip(cfg, skipUntil, System.currentTimeMillis())
       .nextChangeAt
 
-  // 冻结域(enterErrorFrozen / enterFrozen / frozen)已整体迁至 agent/AgentFrozen.scala
-  // (行为保持重构,2026-09-25):方法体逐字未动,frozen 行为内部的 actor 变换与
-  // 自递归(返回下一 frozen behavior)保持原逻辑;notifyEscalation / sessionIdOfRef /
-  // updateRegistryEscalation / updateRegistryFrozenReason / currentNextChange /
-  // reasonStr / ErrorFreezeEscalationThreshold 等冻结域 helper 与常量留守此处;
-  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。
-  private[agent] def enterErrorFrozen(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    reason: FreezeReason,
-    resumeInMs: Long,
-    error: Throwable
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentFrozen.enterErrorFrozen(agentDef, resources, depth, parentRef, state, replyTo, reason, resumeInMs, error)
-
-  private[agent] def enterFrozen(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    resumeAt: Option[Long],
-    reason: FreezeReason = FreezeReason.Schedule,
-    detail: Option[String] = None
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentFrozen.enterFrozen(agentDef, resources, depth, parentRef, state, replyTo, resumeAt, reason, detail)
-
-  private[agent] def frozen(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    resumeAt: Option[Long],
-    reason: FreezeReason = FreezeReason.Schedule,
-    retryCount: Int = 0,
-    escalation: Option[EscalationInfo] = None
-  )(using ctx: ActorContext[AgentCommand]): Behavior[AgentCommand] =
-    AgentFrozen.frozen(agentDef, resources, depth, parentRef, state, replyTo, resumeAt, reason, retryCount, escalation)
-
-  // 压缩/ask 收尾 handler 族已整体迁至 agent/AgentCompactionHandlers.scala(行为保持
-  // 重构,2026-09-25):handleCompactResponse / handleCompactFailure /
-  // emitAbandonedCompaction / dropCompactionScratch / handleAskComplete / isAskReminder /
-  // handleTriggerCompaction / handleEmptyResponse 的实现都在那边(方法体逐字未动);
-  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。
-  private[agent] def handleCompactResponse(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    responseText: String
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentCompactionHandlers.handleCompactResponse(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      responseText
-    )
-
-  private[agent] def handleCompactFailure(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    err: String
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentCompactionHandlers.handleCompactFailure(agentDef, resources, depth, parentRef, state, err)
-
-  private[agent] def emitAbandonedCompaction(state: AgentState, depth: Int)(using
-    ctx: ActorContext[AgentCommand]
-  ): IO[Unit] = AgentCompactionHandlers.emitAbandonedCompaction(state, depth)
-
-  private[agent] def dropCompactionScratch(state: AgentState): AgentState =
-    AgentCompactionHandlers.dropCompactionScratch(state)
-
-  private[agent] def handleAskComplete(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    answerText: String,
-    model: Option[String]
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentCompactionHandlers.handleAskComplete(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      answerText,
-      model
-    )
-
-  private[agent] def isAskReminder(msg: Message): Boolean =
-    AgentCompactionHandlers.isAskReminder(msg)
-
-  private[agent] def handleTriggerCompaction(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    mode: String,
-    replyDeferred: Option[cats.effect.Deferred[IO, Either[String, CompactionResult]]],
-    resumeAfterCompact: Boolean = true,
-    postCompactInstruction: Option[String] = None
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentCompactionHandlers.handleTriggerCompaction(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      mode,
-      replyDeferred,
-      resumeAfterCompact,
-      postCompactInstruction
-    )
-
-  private[agent] def handleEmptyResponse(
-    agentDef: AgentDef,
-    resources: SharedResources,
-    depth: Int,
-    parentRef: Option[ActorRef[AgentCommand]],
-    state: AgentState,
-    replyTo: Option[ActorRef[AgentEvent]],
-    result: ConsumeResult
-  )(using ctx: ActorContext[AgentCommand]): IO[Behavior[AgentCommand]] =
-    AgentCompactionHandlers.handleEmptyResponse(
-      agentDef,
-      resources,
-      depth,
-      parentRef,
-      state,
-      replyTo,
-      result
-    )
-
   // ============================================================
   // F (2026-09-25 命令消重): idle/processing/frozen 三行为里**逐字同形**的
   // 日常命令 handler 收敛为共享助手。判据 = case 体逐字同形（Retry/ResetSession,
@@ -1421,14 +1065,14 @@ object AgentActor extends AgentCore with AgentSession:
         // Re-dispatch LLM call with same messages. 6-arg call goes through
         // the AgentActor shadow (freeze gate) — retry must not bypass the
         // work schedule (spec §5.4: 冻结时段不重试，出冻结段后恢复即重试).
-        pipeLlmCall(agentDef, resources, depth, parentRef, state, None)
+        AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, state, None)
       case Some(LastDispatch(true, Some(cr))) =>
         // Re-dispatch tool execution with same LLM result
-        pipeToolExecutions(agentDef, resources, depth, parentRef, state, cr, None)
+        AgentProcessing.pipeToolExecutions(agentDef, resources, depth, parentRef, state, cr, None)
       case _ =>
         // No checkpoint — go to idle
-        markTeamIdle(agentDef, state.sessionId) *>
-          IO.pure(idle(agentDef, resources, depth, parentRef, state.resetForInterrupt)))
+        AgentFinishTurn.markTeamIdle(agentDef, state.sessionId) *>
+          IO.pure(AgentIdle.idle(agentDef, resources, depth, parentRef, state.resetForInterrupt)))
   end retryFromCheckpoint
 
   /**
@@ -1463,7 +1107,7 @@ object AgentActor extends AgentCore with AgentSession:
         .withRecentMessageIds(Nil)
         .invalidateSystemStableCache
         .resetToIdle(Nil)
-      idle(agentDef, resources, depth, parentRef, resetState)
+      AgentIdle.idle(agentDef, resources, depth, parentRef, resetState)
   end resetSessionHandler
 
   /**

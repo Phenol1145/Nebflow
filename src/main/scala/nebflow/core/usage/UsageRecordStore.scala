@@ -1,10 +1,11 @@
-package nebflow.core
+package nebflow.core.usage
 
 import cats.effect.IO
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.parser.decode
 import io.circe.syntax.*
 import io.circe.{Decoder, Encoder}
+import nebflow.core.AtomicJson
 import nebflow.shared.NebflowLogger
 
 import java.io.RandomAccessFile

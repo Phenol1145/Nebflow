@@ -4,6 +4,7 @@ import cats.effect.unsafe.implicits.global
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
+import nebflow.core.usage.*
 
 import java.time.{LocalDateTime, ZoneId}
 import scala.collection.mutable.ListBuffer

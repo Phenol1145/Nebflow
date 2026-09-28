@@ -5,7 +5,7 @@
        it is on the classpath, so sbt test runs (which put src/test/resources
        first) write no FILE appender at all. -->
 
-  <turboFilter class="nebflow.core.WsTimeoutFilter"/>
+  <turboFilter class="nebflow.shared.WsTimeoutFilter"/>
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
       <pattern>%d{HH:mm:ss.SSS} %msg%n</pattern>

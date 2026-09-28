@@ -197,6 +197,19 @@ object BgTaskRegistry:
     }
 
   /**
+   * #391 机制 E：restart/Stop 联动——杀该 session 全部 shell 进程树（前台 +
+   * 后台 runProcess 注册的 OS 进程）+ 注销 BgTaskRegistry + WS cancelled 通知。
+   *
+   * B9 残留根因链修复：AgentControl restart → Stop → cancelCurrentTurn 只取消
+   * turn fiber（cats-effect Fiber），shell.scala 全程 IO.blocking 取消不中断线程，
+   * bracket release 的 killProcessTree 永不执行 → bash/Chrome/helpers 进程树残留
+   * 需手动 pkill。killSessionProcesses 直接杀注册的进程树，断掉这条链。
+   * 不碰：其他 session 的进程、JVM 自身（ProcessTree 只操作注册的 ProcessHandle）。
+   */
+  // 抽公共收殓函数（孤儿后台任务收割 D1）：杀进程树 + 注销 BgTaskRegistry +
+  // WS cancelled 帧三件事合一，与 NodeEngine 终态出口共用（去重）。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 BgTaskRegistry.reclaimSession；原注保留存证。
+  /**
    * 会话级收殓（孤儿后台任务收割 D1 主钩子）：杀该会话全部 shell 进程树
    * （前台 + 后台 runProcess 注册的 OS 进程）+ 注销 BgTaskRegistry + WS
    * backgroundTaskUpdate(status="cancelled") 帧。

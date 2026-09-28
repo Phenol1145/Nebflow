@@ -2280,7 +2280,7 @@ Message type (optional, default "INFO"):
         // ② 服务端注入（agent→agent 邮件），不是真人输入 —— 显式表态。
         fromUser = false
       )
-      _ <- nebflow.core.UsageTracker.record("mail", senderSid)
+      _ <- nebflow.core.usage.UsageTracker.record("mail", senderSid)
     yield Right(s"Message sent to $label. The agent will process it.")
     end for
 

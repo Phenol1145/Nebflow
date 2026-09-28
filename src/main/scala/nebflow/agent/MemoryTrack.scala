@@ -637,10 +637,41 @@ object MemoryTrack:
     for
       workRoot <- IO.blocking(java.nio.file.Files.createTempDirectory("nb-memory-").toString)
       deferred <- Deferred[IO, Either[String, List[Message]]]
-      agentRef <- resources.actorSystem.spawn(
-        AgentActor(
+      // 2026-09-28 裁定（ORCH4-R4，T9-P3 收口；口径 = `ORCH4-P3` T9 四点 + `ORCH4-P2` 副作用集合逐条对照）：原直构 `resources.actorSystem.spawn(
+      // AgentActor(...), sessionId)` 改为经统一工厂 `resources.spawnAgentActor`——实参
+      // **逐字段镜像**（agentDef=defn / wsSend=panelSend / depth=parentDepth+1 /
+      // parentRef=None / sessionId+sessionName / initialMessages=Nil / projectRoot /
+      // rootSessionId / actorName 全部按名对位）；原 `readTracker = None` +
+      // `fileHistory = None` 两面 ⇒ `withTracking = false`（工厂在该面上传 None，
+      // 与通用 `SpawnParams` 既有 restart 重建语义同款）；原
+      // `contextWindow = resources.contextWindow` ⇒ 工厂 `contextWindow` 字段，
+      // receiver == resources 故同值。下方 registry.update 仍是**本站独立语句**
+      // （工厂不注册，与 Delegate/SubTask/节点各轨分工一致），位置未动。
+      // ⚠ 副作用集合逐条对照（2026-09-28 审计 Finding-3 补记；`ORCH4-P2`「副作用集合逐条
+      // 对照 / 不可证等价须并置注」口径）——**本改指非逐点等价**，逐条载明如下：
+      //   HEAD 直构路径（HEAD:MemoryTrack.scala:641-655）**零创建调用**：sessionId
+      //     处的 spawn 仅传 `readTracker = None` / `fileHistory = None`，不构造任何 tracker。
+      //   改后路径 ⇒ 统一工厂体（agent/SharedResources.scala:222-264）**恒执行**
+      //     `readTracker <- ReadTracker.create` + `fileHistory <- FileHistory.create()`
+      //     **随后丢弃**（withTracking=false ⇒ 两实参仍传 None）⇒ 本站新增：
+      //     ① `FileHistory.create()` 内含 `IO.blocking(Files.createDirectories(historyRoot))`
+      //        （shared/FileHistory.scala:135-147）⇒ 确保 `<dataRoot>/history` 目录存在；
+      //     ② 一次 `ReadTracker.create`（纯 `Ref.of` 分配，shared/ReadTracker.scala:34-35）
+      //        与一次 FileHistory 的 `Ref.of` 分配。
+      //   ⇒ 新增**两个动作**与**一条新失败面**（`createDirectories` 失败 ⇒ 本 spawn 失败；
+      //     HEAD 该路径不创建目录故不受此影响）。该副作用集 = **统一工厂既有行为**
+      //     （与 restart 重建路径 `withTracking = false` 同款，Delegate/SubTask/flow 各轨
+      //     同受），非本批新造；但本站此前不经工厂 ⇒ 对本站而言是**新增**，故按 P2 显式
+      //     载明，**不作静默吸收**。其余字段逐点等价（见上方逐字段对位）。
+      agentRef <- resources.spawnAgentActor(
+        resources.actorSystem,
+        NodeRunner.SpawnParams(
           agentDef = defn,
           resources = resources,
+          sessionId = sessionId,
+          sessionName = "memory-consolidation",
+          depth = parentDepth + 1,
+          parentRef = None,
           // 面板接线（B 腿 2026-09-15）：改动前恒 `IO.unit`（轨内事件不进前端，
           // 理由「噪音面」）⇒ 注册表有条目、前端零活帧 ⇒ subagent 面板永不建行
           // （行由 `agentStart` 活帧创建；`getActiveAgents` 快照只在 WS 建连时重拉）。
@@ -648,25 +679,23 @@ object MemoryTrack:
           // （Delegate / SubTask / 节点 / 分发器同款），`agentStart` 建行、
           // `agentDone` 收行，会话级生命周期帧被滤掉。
           wsSend = panelSend,
-          depth = parentDepth + 1,
-          parentRef = None,
-          sessionId = Some(sessionId),
-          sessionName = Some("memory-consolidation"),
-          initialMessages = Nil,
-          readTracker = None,
-          fileHistory = None,
-          contextWindow = resources.contextWindow,
           projectRoot = Some(workRoot),
-          rootSessionId = root
-        ),
-        // actor 名 == sessionId（**契约，非风格**）：快照面的行键是 sessionId
-        // （`WebSocketRoutes.activeAgentEntryJson` 注释「Contract: agentId == sessionId」），
-        // 而活帧的 agentId = `ctx.self.path.name`（`protocol.scala:803`）——两者不一致
-        // 即同一会话落两个键，`agentDone` 清不掉快照行（幽灵行，同 Mail 路径旧缺陷）。
-        // `NodeRunner.spawnAgentActor:99` 对全部子代理 spawn 路径即此规则；本轨绕过它
-        // 直接 spawn，故在此显式对齐（2026-09-13 面板可见性取证 C-2 判红；
-        // `MemoryTrackActorIdContractSpec` 现场读数钉死）。
-        sessionId
+          rootSessionId = root,
+          initialMessages = Nil,
+          // actor 名 == sessionId（**契约，非风格**）：快照面的行键是 sessionId
+          // （`WebSocketRoutes.activeAgentEntryJson` 注释「Contract: agentId == sessionId」），
+          // 而活帧的 agentId = `ctx.self.path.name`（`protocol.scala:803`）——两者不一致
+          // 即同一会话落两个键，`agentDone` 清不掉快照行（幽灵行，同 Mail 路径旧缺陷）。
+          // `NodeRunner.spawnAgentActor:99` 对全部子代理 spawn 路径即此规则；本轨绕过它
+          // 直接 spawn，故在此显式对齐（2026-09-13 面板可见性取证 C-2 判红；
+          // `MemoryTrackActorIdContractSpec` 现场读数钉死）。
+          // 2026-09-28 并置（ORCH4-R4，T9-P3）：本轨**不再绕过**该规则——上式已改经
+          // `resources.spawnAgentActor`，`actorName = sessionId` 即原第二实参 `sessionId`
+          // 的对位（工厂 `actorName` 为空时才回落 sessionId，此处显式传入以保持字面契约）。
+          // 原注逐字保留，未改一字。
+          actorName = sessionId,
+          withTracking = false
+        )
       )
       // 桥 actor：收 AgentEvent → 完成 Deferred → 自停。必须 watch(agentRef)：直接
       // 对 agent 发 Stop（超时清理）时 Terminated 在此完成 deferred(Left)，否则

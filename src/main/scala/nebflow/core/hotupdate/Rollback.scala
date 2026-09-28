@@ -75,7 +75,7 @@ final class Rollback(
         val cmdPreview =
           HotRestart.buildCommand(
             form,
-            nebflow.core.RestartHelper.resolveJavaBin(),
+            nebflow.core.hotrestart.RestartHelper.resolveJavaBin(),
             Some(jar),
             intentFile.toString,
             dataRoot.toString,

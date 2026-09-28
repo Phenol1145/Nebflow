@@ -335,6 +335,22 @@ object BackoffSupervisor:
                 )
             end if
 
+      // 2026-09-28 裁定（ORCH4-R1；口径 = `ORCH4-P1` T7 三面 + `ORCH4-P2` 逐点等价，落点 = agent/LifecycleEnds.scala）：本终态序列
+      // 与 SessionChildCascade / SubAgentStartupRecovery 经逐行 + 词法归一两步判别，
+      // **无逐字形同业务子序列**（台账见 LifecycleEnds 对象 doc），故本序列**零改指、
+      // 零重排、六步顺序逐点保持**（通知父 → 任务记账 → hub 清槽 → 预算释放 →
+      // 注册表移除 → child Stop → 自停）。本面特有动作按裁定 ② 留守本站；与另两面
+      // 的明文差异按裁定 ① 保留原状（禁统一），四处载明：
+      //   ① 任务记账**就地** `.handleErrorWith`（另两面无／在调用方兜）⇒ 控制流差异；
+      //   ② 通知父走 actor tell（`parentRef match` 的 Some/None 两岔），而 SR 走 F2
+      //      队列落盘、SC 则经「投递 Cancelled 给监督者」间接汇入本站；
+      //   ③ 注册表移除**先于** child Stop，与 SC 无 supervisor 降级腿的相反顺序 ⇒
+      //      裁定 ②「动作顺序逐点等价」要求在此显式保留原顺序，禁重排；
+      //   ④ 另有 hub 清槽与 DelegateBudget 释放两步是本站独有（另两面无）。
+      // 并置原注（`AgentEvent.Cancelled` 分支的「与 Completed/Failed 竞态」论证、
+      // `notifyParentAndStop` 的「终态三清（R2-c §7#4 + 本设计）」块、`cleanupPendingAsks`
+      // 的「source-death 清理」doc）逐字保留，未改一字。
+
       /** Notify parent via ExternalEvent, clean up registry, stop self. */
       private def notifyParentAndStop(
         eventType: String,

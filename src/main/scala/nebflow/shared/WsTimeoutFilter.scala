@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.shared
 
 import ch.qos.logback.classic.spi.IThrowableProxy
 import ch.qos.logback.classic.turbo.TurboFilter

@@ -239,7 +239,8 @@ class HealthGateSpec extends munit.CatsEffectSuite:
       _ = assertEquals(cur, Some("2026.9.20"))
       _ = assertEquals(prev, Some("2026.9.19"))
       jar <- InstallPointer.jarIn(dir, "2026.9.19").flatMap(orDie("retained package"))
-      _ = assert(jar.endsWith("versions/2026.9.19/nebflow-assembly-2026.9.19.jar"), jar)
+      // 2026-09-28 裁定（ORCH5-R2）：预存在 Windows 环境不兼容（**被改写的原语句**与 HEAD 逐字节相同），按仓内先例最小容忍化；断言意图零变。〔注号口径 = ORCH5-P4 例外面；登记见 agent/LifecycleEnds.scala ORCH5 台账⑦〕
+      _ = assert(jar.replace('\\', '/').endsWith("versions/2026.9.19/nebflow-assembly-2026.9.19.jar"), jar)
       flipped <- InstallPointer.flip(dir)
       _ = assertEquals(flipped, Right(("2026.9.19", "2026.9.20")))
       after <- InstallPointer.layout(dir)
@@ -286,7 +287,11 @@ class HealthGateSpec extends munit.CatsEffectSuite:
       _ = assertEquals(layout.current, Some("2026.9.19"), "green: the launcher now runs the previous version")
       _ = assertEquals(layout.previous, Some("2026.9.20"))
       seen <- captured.get
-      _ = assert(seen.exists(_._1.endsWith("versions/2026.9.19/nebflow-assembly-2026.9.19.jar")), seen.toString)
+      // 2026-09-28 裁定（ORCH5-R2）：预存在 Windows 环境不兼容（**被改写的原语句**与 HEAD 逐字节相同），按仓内先例最小容忍化；断言意图零变。〔注号口径 = ORCH5-P4 例外面；登记见 agent/LifecycleEnds.scala ORCH5 台账⑦〕
+      _ = assert(
+        seen.exists(_._1.replace('\\', '/').endsWith("versions/2026.9.19/nebflow-assembly-2026.9.19.jar")),
+        seen.toString
+      )
       // 「只替换包路径」的可核判据：回执/意图里的复起命令**逐字等于既有纯函数命令构造**
       // 对同一 form/javaBin **只把包路径换成上一版**的产物（不新造命令构造器）。
       // ⚠️ 不直接断言 spawnCmd 含版本号：`HotRestart.detectForm` 在测试 JVM（sbt 类路径、
@@ -298,7 +303,7 @@ class HealthGateSpec extends munit.CatsEffectSuite:
           i.spawnCmd == HotRestart
             .buildCommand(
               i.form,
-              nebflow.core.RestartHelper.resolveJavaBin(),
+              nebflow.core.hotrestart.RestartHelper.resolveJavaBin(),
               Some(jar),
               SuccessorGate.intentPath(dataRoot).toString,
               dataRoot.toString,

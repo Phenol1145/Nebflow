@@ -109,9 +109,23 @@ class MemoryTrackPauseSpec extends FunSuite:
       val ws = root / "ws"
       val projectMd = ws / ".nebflow" / "memory.md"
       os.write.over(projectMd, "# Project demo\n\n## Lessons\n\n- existing project line\n", createFolders = true)
+      // 2026-09-28 裁定（ORCH4-R5；编号纪律 `ORCH4-P5`）：夹具 JSON 构造修正——Windows 路径内插必须转义
+      // 反斜杠。裸内插 `ws.toString` 使 workspace 落成反斜杠路径，`\U` 是 JSON 非法
+      // 转义 ⇒ `ProjectStore.load` 解析失败（冒烟日志实证：`Failed to parse project
+      // 'demo': ParsingFailure: illegal escape sequence (\U)`，且轨计划面同步出现
+      // `target-missing: no memory file for 'project:demo'`）⇒ 项目面 None ⇒ 触点集
+      // 只剩 user/agent 两层 ⇒ 下方「三层同在」断言恒红。POSIX 路径为正斜杠 ⇒ 无此
+      // 显形形态（**Windows 专属夹具缺陷**，与 ORCH4 主批无关）。
+      // 修法取 R5② 的最小改档（`replace`），未取 `ProjectDef(...).asJson` 首选档：
+      // `ProjectDef` 的 `createdAt` 是**必填无默认**、`archived` 走**条件序列化**，
+      // 且本 spec 未 import ProjectDef / circe syntax ⇒ codec 档需引新依赖且会改变
+      // 夹具输出键集；最小改档使 JSON **除该转义缺陷外逐字节不变**。
+      // **断言语义与期望值一字未动**，只修夹具 JSON 构造。
+      // 转义值单列一 val：JSON 行因此远离 maxColumn=120 边界（scalafmt 门禁无忧）。
+      val demoWorkspace = ws.toString.replace("\\", "\\\\")
       os.write.over(
         ProjectStore.projectJsonPath("demo"),
-        s"""{"name":"demo","workspace":"${ws.toString}","agentFile":"AGENTS.md","createdAt":0}""",
+        s"""{"name":"demo","workspace":"$demoWorkspace","agentFile":"AGENTS.md","createdAt":0}""",
         createFolders = true
       )
       os.write.over(MemoryStore.userMemoryPath, "# User\n\n## Notes\n\n- existing user line\n", createFolders = true)

@@ -215,7 +215,16 @@ class ToolFaceVariantSchemaSpec extends FunSuite:
       .map(_.last)
       .toList
       .sorted
-    assertEquals(holders, List("AgentCore.scala"), "root 判据出现第二份实现")
+    // 2026-09-28 裁定（ORCH4-R5；编号纪律 `ORCH4-P5`，承 R-F 先例 dwfq-5c7a31ea-1「单点已迁
+    // actor/RootAgentIdentity.scala，断言目标随迁」）：本条断言原为
+    // `List("AgentCore.scala")`，**R-F 批次漏改**（姊妹 spec `AskUserDualModeSchemaSpec:197`
+    // 同款同正则已改，本条未随迁）⇒ HEAD 起恒红。本批 ORCH4 普查中经同款「剥注释 +
+    // 同正则 + 全 main 树」实跑复核：命中集 = 唯一一行
+    // `src/main/scala/nebflow/actor/RootAgentIdentity.scala:48`
+    // （`agentDef.exists(_.name == RootAgentIdentity.Name) && depth == 0`），
+    // 与 `AgentCore.scala` 无涉 ⇒ re-pin 为 List("RootAgentIdentity.scala")。
+    // **断言语义零变**：仍钉「root 判据只许一处实现」（规格 §3.1 一处实现、多点委托）。
+    assertEquals(holders, List("RootAgentIdentity.scala"), "root 判据出现第二份实现")
   }
 
   // ============================================================
