@@ -73,7 +73,7 @@ object RgHelper:
     localPath: String,
     winInstall: Option[String]
   ): Option[String] =
-    val fromBundled = nebflow.core.InstallLayout.bundledRg
+    val fromBundled = nebflow.core.boot.InstallLayout.bundledRg
     // 1. PATH lookup
     val fromPath = pathEnv
       .split(File.pathSeparator)

@@ -3,6 +3,7 @@ package nebflow.core
 import io.circe.{Json, JsonObject}
 import io.circe.syntax.*
 import munit.{BeforeEach, FunSuite}
+import nebflow.core.mcp.*
 
 /**
  * P0-1 / P-M1 审批门验收（spec `.nebflow/Spec/20260907_sandbox-mcp-spec.md` §2.7 的 A1-1…A1-8

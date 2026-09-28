@@ -2,7 +2,7 @@ package nebflow.cli
 
 import cats.effect.IO
 import io.circe.syntax.given
-import nebflow.core.AutoStartService
+import nebflow.core.hotrestart.AutoStartService
 
 object AutoStartCommand extends CliCommand:
   def name = "autostart"

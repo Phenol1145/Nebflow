@@ -51,6 +51,25 @@ import nebflow.shared.*
 object SubAgentStartupRecovery:
   private val logger = NebflowLogger.forName("nebflow.agent.startup-recovery")
 
+  // 2026-09-28 裁定（ORCH4-R1；口径 = `ORCH4-P1` T7 三面 + `ORCH4-P2` 逐点等价，落点 = agent/LifecycleEnds.scala）：本面与
+  // SessionChildCascade / BackoffSupervisor 的终态序列经逐行 + 词法归一两步判别，
+  // **无逐字形同业务子序列**（台账见 LifecycleEnds 对象 doc），故本面**零改指、
+  // 零重排、三步顺序逐点保持**（抢救 → 通知 → 终态化）。本面特有动作按裁定 ②
+  // 留守本站：① 抢救（子会话磁盘转录的 last-assistant 文本，:87-94（HEAD :68-75，+19））；② 通知走
+  // F2 注入队列**落盘**（CompactionQueueStore，:148-155（HEAD :129-136，+19））而非 actor tell——
+  // 与 BS 的 `parentRef ! ExternalEvent` 投递机制不同；③ `parentExists` 守卫
+  // 在「父会话已删」时只终态化不通知（:95、:121（HEAD :76、:102，+19））；④ 幂等键 = correlationId（taskId）。
+  // ⚠ 行号口径（2026-09-28 审计 Finding-1 随迁 re-pin）：本注在对象顶部插入 19 行 ⇒
+  // 本文件内所有目标行现行坐标 = HEAD + 19，漂移量逐字等于 numstat 插入量。
+  // 与 BS 的两处明文差异按裁定 ① 保留原状（禁统一）：
+  //   · `store.updateStatus(...)` 本站**不带** handleErrorWith（错误由 recoverOrphans
+  //     的 `orphans.traverse(… .handleErrorWith(…))` 兜，:80-83（HEAD :61-64，+19）），BS 是就地
+  //     handleErrorWith ⇒ 错误处理**位置**不同（控制流结构差异，非实参差异）；
+  //   · `completedAt = Some(now)` 用 for-comprehension 首步早绑的 `now`（:89（HEAD :70，+19）），
+  //     BS 是调用时现读墙钟 ⇒ 取值点不同。
+  // 并置原注：上方对象 doc 的三步编号说明、下方 `notifyOnce` / `extractLastAssistant`
+  // doc（含「same extraction rule the Delegate adapters use」）逐字保留，未改一字。
+
   /** Run the orphan sweep. Returns the terminalized task ids (for boot log). */
   def recoverOrphans(store: SubAgentTaskStore, sessionStore: SessionStore): IO[List[String]] =
     store.findRunningTasks.flatMap {

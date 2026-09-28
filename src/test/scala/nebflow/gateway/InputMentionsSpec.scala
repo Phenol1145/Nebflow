@@ -15,19 +15,19 @@ class InputMentionsSpec extends CatsEffectSuite:
     project = _ => IO.pure(None),
     flow = _ => IO.pure(None),
     session = _ => IO.pure(None),
-    skill = _ => IO.pure(None),
+    skill = _ => IO.pure(None)
   )
 
   private def lookupsWith(
     project: Map[String, (String, String)] = Map.empty,
-    skill: Map[String, (String, String)] = Map.empty,
+    skill: Map[String, (String, String)] = Map.empty
   ): InputMentions.Lookups =
     InputMentions.Lookups(
       file = _ => IO.pure(None),
       project = name => IO.pure(project.get(name.toLowerCase)),
       flow = _ => IO.pure(None),
       session = _ => IO.pure(None),
-      skill = name => IO.pure(skill.get(name)),
+      skill = name => IO.pure(skill.get(name))
     )
 
   test("无提及文本逐字节原样"):
@@ -63,7 +63,7 @@ class InputMentionsSpec extends CatsEffectSuite:
   test("resolve：指针块追加尾部并按指针行去重"):
     val lk = lookupsWith(
       project = Map("nebflow" -> (("Nebflow", "/ws/nebflow"))),
-      skill = Map("review" -> (("review", "审阅技能"))),
+      skill = Map("review" -> (("review", "审阅技能")))
     )
     val t = "总结 @project:nebflow 与 @project:nebflow 的差异，用 $review 走查"
     InputMentions.resolve(t, lk).map { case (out, unres) =>
@@ -87,7 +87,7 @@ class InputMentionsSpec extends CatsEffectSuite:
       project = _ => IO.pure(None),
       flow = _ => IO.pure(None),
       session = _ => IO.pure(None),
-      skill = _ => IO.pure(None),
+      skill = _ => IO.pure(None)
     )
     val t = "看 @src/x.scala"
     InputMentions.resolve(t, boom).map { case (out, unres) =>
@@ -111,3 +111,4 @@ class InputMentionsSpec extends CatsEffectSuite:
     lk("/src/main/A.scala").map { hit =>
       assertEquals(hit.map(p => p.replace('\\', '/').endsWith("/src/main/A.scala")), Some(true))
     }
+end InputMentionsSpec

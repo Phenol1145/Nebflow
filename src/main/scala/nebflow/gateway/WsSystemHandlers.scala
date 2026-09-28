@@ -605,7 +605,7 @@ private[gateway] object WsSystemHandlers:
     import ctx.*
     // Settings panel "start on login" toggle (F2) — shared logic with
     // the `nebflow autostart` CLI via AutoStartService.
-    nebflow.core.AutoStartService.status().flatMap { st =>
+    nebflow.core.hotrestart.AutoStartService.status().flatMap { st =>
       wsSend(
         io.circe.Json.obj(
           "type" -> "autostartStatusResult".asJson,
@@ -626,11 +626,13 @@ private[gateway] object WsSystemHandlers:
     import ctx.*
     val asJson = parsedJson(text)
     val enable = asJson.hcursor.downField("enabled").as[Boolean].getOrElse(false)
-    val op = if enable then nebflow.core.AutoStartService.enable() else nebflow.core.AutoStartService.disable()
+    val op =
+      if enable then nebflow.core.hotrestart.AutoStartService.enable()
+      else nebflow.core.hotrestart.AutoStartService.disable()
     op.flatMap { res =>
       // Always answer with the authoritative post-op status; attach
       // the op message on failure so the UI can toast + revert the toggle.
-      nebflow.core.AutoStartService.status().flatMap { st =>
+      nebflow.core.hotrestart.AutoStartService.status().flatMap { st =>
         wsSend(
           io.circe.Json.obj(
             "type" -> "autostartStatusResult".asJson,

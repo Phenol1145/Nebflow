@@ -1,7 +1,7 @@
 package nebflow.social
 
 import munit.FunSuite
-import nebflow.core.CredentialFileAcl
+import nebflow.shared.CredentialFileAcl
 import nebflow.social.SocialChannels.Failure
 
 import java.nio.file.attribute.PosixFilePermissions

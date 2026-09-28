@@ -38,7 +38,7 @@ object RemoteUpdateAction:
 
   /** Run the install script. Returns Right(msg) on success, Left(error) on failure. */
   def runInstallScript(beta: Boolean): IO[Either[String, String]] =
-    if nebflow.core.InstallLayout.isMsiInstall then
+    if nebflow.core.boot.InstallLayout.isMsiInstall then
       IO.pure(
         Left(
           "This copy was installed with the Windows installer (msi); the in-app update " +

@@ -20,6 +20,7 @@ import nebflow.shared.{Message, MessageRole}
  *   3. 无 pending 作业 ⇒ 两面都必须 no-op（不得误摘、不得误发帧）；
  *   4. 摘除判据对**所有 profile** 的 reminder 都成立（共用签名，不是逐 profile 硬编码）。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentCompactionHandlers.emitAbandonedCompaction / AgentCompactionHandlers.dropCompactionScratch；原注保留存证。
 class CompactionAbandonFaceSpec extends FunSuite:
 
   private def userMsg(text: String): Message = Message(MessageRole.User, Left(text))

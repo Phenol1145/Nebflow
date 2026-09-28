@@ -27,6 +27,24 @@ import nebflow.shared.NebflowLogger
 object SessionChildCascade:
   private val logger = NebflowLogger.forName("nebflow.agent.session-cascade")
 
+  // 2026-09-28 裁定（ORCH4-R1；口径 = `ORCH4-P1` T7 三面 + `ORCH4-P2` 逐点等价，落点 = agent/LifecycleEnds.scala）：本面与
+  // SubAgentStartupRecovery / BackoffSupervisor 的终态序列经逐行 + 词法归一两步
+  // 判别，**无逐字形同业务子序列**（台账见 LifecycleEnds 对象 doc），故本面
+  // **零改指、零重排、动作顺序逐点保持**。本面两处特有点按裁定 ② 留守本站：
+  //   ① 终结判定 = `parentSessionId == sessionId && kind ∈ {Delegate,SubTask,
+  //      Ephemeral}`（:64-65（HEAD :46-47）；全仓唯一谓词，与 SR 的 `status=="running"`
+  //      不同源。⚠ 行号口径（2026-09-28 审计 Finding-1 随迁 re-pin）：本注在对象顶部
+  //      插入 18 行 ⇒ 本文件内所有目标行现行坐标 = HEAD + 18；`grep 'parentSessionId =='`
+  //      须按**剥注释**口径判（`codeOnly` 先例），否则会命中本注 :34 自身）；
+  //   ② `supervisorRef match` 两岔——有 supervisor 走「投递 Cancelled 给监督者」
+  //      （现行 :73（HEAD :55，+18）；再汇入 BackoffSupervisor:163-181 的终态序列），
+  //      无 supervisor 走本站
+  //      降级腿（顺序 = child Stop（现行 :75（HEAD :57））→ 注册表移除（现行 :79（HEAD :61）），**与 BS 终态腿的
+  //      注册表移除 → child Stop 相反顺序**，且本站 Stop 带 handleErrorWith、BS 不带 ⇒
+  //      裁定 ① 判「不满足逐字同形」，禁统一）。
+  // 并置原注（上方对象 doc 的 V1 取舍论证、下方 def doc 的「停止走 doCancel 同款正路」
+  // 与 `sup ! Cancelled` 行的「绝不能再包一层 IO(...)」提示）逐字保留，未改一字。
+
   /**
    * Stop every Delegate/SubTask/Ephemeral child of `sessionId` (registry
    * lookup by parentSessionId), unregister it, and terminalize its in-flight

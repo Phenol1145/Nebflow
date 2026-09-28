@@ -17,6 +17,7 @@ import nebflow.shared.{NebflowLogger, *}
  * 默认参数原样),全部调用点零改动;pipeLlmCall / pipeToolExecutions 留守
  * AgentActor,经 import AgentActor.* 引用。
  */
+// 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.handleLlmCompleteBranch / finishTurn / finishTurnCont / markTeamBusy / markTeamIdle / fullyIdle / emitDequeuedWs；原注保留存证。
 private[agent] object AgentFinishTurn:
   import nebflow.agent.AgentActor.*
 
@@ -24,6 +25,13 @@ private[agent] object AgentFinishTurn:
   // LlmComplete branch selector
   // ============================================================
 
+  // turn 收尾族已整体迁至 agent/AgentFinishTurn.scala(行为保持重构,2026-09-25):
+  // handleLlmCompleteBranch / finishTurn / finishTurnCont / markTeamBusy /
+  // markTeamIdle / fullyIdle / emitDequeuedWs 的实现都在那边(方法体逐字未动);
+  // 此处保留同名委托 def(签名与默认参数原样),调用点零改动。pipeLlmCall /
+  // pipeToolExecutions 后随 processing 域迁至 agent/AgentProcessing.scala(同日,
+  // 见上方 processing 委托处注释)。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.handleLlmCompleteBranch；原注保留存证。
   private[agent] def handleLlmCompleteBranch(
     agentDef: AgentDef,
     resources: SharedResources,
@@ -39,7 +47,7 @@ private[agent] object AgentFinishTurn:
     // Compact turn: tools disabled (pipeLlmCall sets tools=Some(Nil)),
     // text-only summary required.
     if state.pendingCompaction.isDefined && result.toolCalls.isEmpty && result.text.nonEmpty then
-      handleCompactResponse(agentDef, resources, depth, parentRef, state, result.text)
+      AgentCompactionHandlers.handleCompactResponse(agentDef, resources, depth, parentRef, state, result.text)
     else if state.pendingCompaction.exists(
         _.phase == CompactionPhase.Compact
       ) && result.toolCalls.isEmpty && result.text.isEmpty
@@ -54,7 +62,7 @@ private[agent] object AgentFinishTurn:
       // the circuit-breaker counter, emits CompactFailed, completes the
       // deferred waiter, and (auto-compaction) ends the turn with an honest
       // failure instead of laundering it through the mail-reminder mechanism.
-      handleCompactFailure(
+      AgentCompactionHandlers.handleCompactFailure(
         agentDef,
         resources,
         depth,
@@ -63,16 +71,31 @@ private[agent] object AgentFinishTurn:
         "Compact phase returned no text (thinking-only response) — the summary must be written as text, not reasoning"
       )
     else if state.pendingCompaction.isDefined && result.toolCalls.nonEmpty then
-      handleCompactFailure(agentDef, resources, depth, parentRef, state, "Compact model unexpectedly called tools")
+      AgentCompactionHandlers.handleCompactFailure(
+        agentDef,
+        resources,
+        depth,
+        parentRef,
+        state,
+        "Compact model unexpectedly called tools"
+      )
     else if state.askMode.isDefined && result.toolCalls.isEmpty then
-      handleAskComplete(agentDef, resources, depth, parentRef, state, result.text, result.model)
+      AgentCompactionHandlers.handleAskComplete(agentDef, resources, depth, parentRef, state, result.text, result.model)
     else if result.toolCalls.nonEmpty then
-      pipeToolExecutions(agentDef, resources, depth, parentRef, state.withEmptyResponseRetries(0), result, replyTo)
+      AgentProcessing.pipeToolExecutions(
+        agentDef,
+        resources,
+        depth,
+        parentRef,
+        state.withEmptyResponseRetries(0),
+        result,
+        replyTo
+      )
     else if result.text.nonEmpty || result.thinking.nonEmpty then
       // Mail check: team members must call Mail before finishing.
       // After MaxMailReminders retries, give up and finishTurn (avoid infinite loop).
       if state.expectsMail && !state.mailUsedThisTurn && state.mailReminders < MaxMailReminders then
-        handleMissingMail(agentDef, resources, depth, parentRef, state, replyTo, result)
+        AgentProcessing.handleMissingMail(agentDef, resources, depth, parentRef, state, replyTo, result)
       else
         if state.expectsMail && !state.mailUsedThisTurn then
           logAgentEvent(
@@ -96,7 +119,7 @@ private[agent] object AgentFinishTurn:
           textAlreadyStreamed = true,
           result.model
         )
-    else handleEmptyResponse(agentDef, resources, depth, parentRef, state, replyTo, result)
+    else AgentCompactionHandlers.handleEmptyResponse(agentDef, resources, depth, parentRef, state, replyTo, result)
 
   // ============================================================
   // Finish turn
@@ -139,7 +162,8 @@ private[agent] object AgentFinishTurn:
         val now = System.currentTimeMillis()
         (
           // compactui 批（2026-09-15 事故 ②）：同中断面，先把压缩轮临时输入摘掉。
-          dropCompactionScratch(state)
+          AgentCompactionHandlers
+            .dropCompactionScratch(state)
             .withPendingCompaction(None)
             .withCompactionFailures(state.compactionFailures + 1)
             .withLastCompactionFailureAt(now),
@@ -151,7 +175,7 @@ private[agent] object AgentFinishTurn:
             ) *>
             // compactui 批（2026-09-15 事故 ①）：本路径原先只记 lifecycle 事件，
             // 前端收不到终局帧 ⇒ pill 永挂（与中断面同一缺陷类，一并补齐）。
-            emitAbandonedCompaction(state, depth)
+            AgentCompactionHandlers.emitAbandonedCompaction(state, depth)
         )
       case None => (state, IO.unit)
     // #22 (2026-08-19): 空轮必须留痕——thinking-only 响应（text 空、无工具）
@@ -230,18 +254,12 @@ private[agent] object AgentFinishTurn:
       s"msgs=${state.messages.size} textLen=${text.length} textStreamed=$textStreamed " +
         s"thinking=${thinking.map(_.length).getOrElse(0)} model=${model.getOrElse("-")}"
     )
-    // #25 (nested delegation dead-letter): "turn ended" is NOT "task completed"
-    // while spawned sub-agents are still in flight. The completion notification
-    // (supervisor adapter / ask fork / flow bridge) is PARKED in
-    // execution.owedCompletion instead of being sent — BackoffSupervisor would
-    // otherwise stop this actor on Completed and the grandchildren's results
-    // would dead-letter. When a later turn ends with the barrier at 0, every
-    // parked target receives the Completed event carrying the FINAL synthesized
-    // text and the debt clears. Root agents (replyTo=None, no debt) unaffected.
-    val completionTargets: List[ActorRef[AgentEvent]] =
-      (replyTo.toList ++ state.execution.owedCompletion).distinct
-    val subagentsInFlight = state.execution.outstandingSubagentResults > 0
-    val owedAfter: List[ActorRef[AgentEvent]] = if subagentsInFlight then completionTargets else Nil
+    // 2026-09-27 裁定（ORCH2-P4）：完成债三要素判定（completionTargets /
+    // subagentsInFlight / owedAfter）收口 TurnBoundary.turnEndCompletionDebt
+    // ——#25 (nested delegation dead-letter) 裁定块随实现迁至该方法体（逐字
+    // 未动），本站点指向；下方各消费点三值语义逐字不变。
+    val (completionTargets, subagentsInFlight, owedAfter) =
+      TurnBoundary.turnEndCompletionDebt(replyTo, state.execution)
 
     // #407: turn 收尾回 idle（原 else 分支提取）。queue drain 分支的 idle-gate
     // 拦截也复用此收尾——queue 延迟投递但本 turn 正常结束（Done/持久化/debt
@@ -291,6 +309,10 @@ private[agent] object AgentFinishTurn:
                 )
             )
           }
+      // 2026-09-27 裁定（ORCH1-R8）：pendingUserInputs 取队首 + tail-safe 尾留存
+      // 收口 TurnBoundary.forwardUserInputHead（原 :327-329 判据注释随迁方法体；
+      // 纯函数提升不改变下方发送时序）。
+      val (userHeadOpt, execAfterForward) = TurnBoundary.forwardUserInputHead(state.execution)
       for
         _ <- emitDoneIO
         _ <- state.sessionId.fold(IO.unit)(sid =>
@@ -322,45 +344,18 @@ private[agent] object AgentFinishTurn:
         // Drain pending user inputs: forward head to self (agent is now idle,
         // so it will be processed with full metadata by the idle handler). The
         // tail is preserved for the next turn boundary drain.
-        _ <- state.execution.pendingUserInputs.headOption.traverse_(msg => ctx.self ! msg)
+        _ <- userHeadOpt.traverse_(msg => ctx.self ! msg)
       yield
-        // Empty-queue safe tail (same guard style as TurnBoundaryDrains.drainHead):
-        // the REST /api/command turn-end path reaches this branch with an empty
-        // queue on every turn — a bare .tail threw "tail of empty list" there.
-        val remainingUserInputs =
-          val queued = state.execution.pendingUserInputs
-          if queued.isEmpty then queued else queued.tail
-        val keptInteraction = state.execution.interaction.filter(_.pendingPermission.isDefined)
+        // 2026-09-27 裁定（ORCH1-R10 / P4）：手抄逐字段 ExecutionContext.idle copy
+        // 收口 TurnBoundary.toIdle——组装语义不变，原 :340-358（re-pin：随本批
+        // 改指漂移）四段日期裁定注释逐字随迁方法体；keptInteraction 的
+        // pendingPermission 过滤同迁（execAfterForward.interaction 与原
+        // state.execution.interaction 逐字相等——forwardUserInputHead 只动
+        // pendingUserInputs）。
         val updatedState = state
-          .copy(execution =
-            ExecutionContext
-              .idle(newMessages, state.execution.turnIdx)
-              .copy(
-                interaction = keptInteraction,
-                // Preserve queue when compaction is in progress — CompactionComplete drains it.
-                pendingImmediateInputs = state.execution.pendingImmediateInputs,
-                pendingUserInputs = remainingUserInputs,
-                // Sub-agent barrier: held subtask/delegate results and the
-                // outstanding count survive the turn boundary (the batch may
-                // still be running — they are injected when it completes).
-                pendingEvents = state.execution.pendingEvents,
-                outstandingSubagentResults = state.execution.outstandingSubagentResults,
-                // #25: parked completion debt survives the turn boundary —
-                // paid off when a later turn ends with the barrier at 0.
-                owedCompletion = owedAfter,
-                // #10 (2026-08-27 mail-queue wedge): ExecutionContext.idle
-                // rebuilds pendingMailQueueCount to 0. This returnToIdle tail
-                // is ALSO reached by the queue drain branch's idle-gate
-                // deferral path (pendingMailQueueCount>0 but subtree busy) —
-                // without carrying the counter, the NEXT turn's drain branch
-                // (`pendingMailQueueCount > 0`) is permanently false and the
-                // disk queue wedges until another MailQueued arrives. The two
-                // earlier injection branches already carry it; this tail must too.
-                pendingMailQueueCount = state.execution.pendingMailQueueCount
-              )
-          )
+          .copy(execution = TurnBoundary.toIdle(execAfterForward, newMessages, owedAfter))
           .withMailTurnCount(state.mailTurnCount + 1)
-        idle(agentDef, resources, depth, parentRef, updatedState)
+        AgentIdle.idle(agentDef, resources, depth, parentRef, updatedState)
       end for
     end returnToIdle
     if subagentsInFlight && completionTargets.nonEmpty then
@@ -376,12 +371,11 @@ private[agent] object AgentFinishTurn:
     // subtask/delegate results stay held (worker blocking semantics) — they are
     // injected ALL together when the batch completes. Other event types keep
     // the existing serial one-at-a-time drain.
+    // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+    // TurnBoundary.drainForFinishTurnEvents（compactionPending = false 实参
+    // 按站传入，决策仍走 TurnBoundaryDrains.drainBarrier 纯函数）。
     val (drainedEvents, remainingEvents) =
-      TurnBoundaryDrains.drainBarrier(
-        state.execution.pendingEvents,
-        compactionPending = false,
-        state.execution.outstandingSubagentResults
-      )
+      TurnBoundary.drainForFinishTurnEvents(state)
     if drainedEvents.nonEmpty then
       val roundCompleteIO: IO[Unit] =
         if !isSubagent then
@@ -407,6 +401,17 @@ private[agent] object AgentFinishTurn:
       )
       val updatedState = state
         .copy(execution =
+          // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+          // TurnBoundary.withCarriedQueues 默认形仅差 pendingEvents 显式覆盖，
+          // 但站点专属日期注释组（#25）与本批「注释随代码」铁律耦合 ⇒ 不强并）
+          // ——保留原状，Battle-2 靶点。
+          // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项（`待下批`
+          // 字样为历史遗留）= **明确建议**（不再登记为悬空）：处置方案 = ORCH4 台账⑤ 方案 A
+          // ——`TurnBoundary` 边界帧增设显式画像实参（carryDelivery / carryProject 等按站传入），
+          // 把本腿组装收进 TurnBoundary 而字段省略逐站显式；成本 ≈ 组装函数签名 + 3 站点实参，
+          // 零新依赖（可行性：高）。不并入本批理由 = 帧字节层面不可证等价（ORCH2-P5 定案
+          // 「禁静默统一」），强行并入即改线协议字节。落点：`agent/LifecycleEnds.scala`
+          // ORCH5 台账⑤（承接三态表）。
           ExecutionContext
             .idle(messagesWithPending, state.execution.turnIdx)
             .copy(
@@ -441,7 +446,7 @@ private[agent] object AgentFinishTurn:
           // flight — park the debt (owedAfter) and keep the requester waiting.
           if subagentsInFlight then IO.unit
           else completionTargets.traverse_(_ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithPending))
-        result <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+        result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
       yield result
       end for
     else if state.pendingCompaction.isEmpty && state.execution.pendingImmediateInputs.nonEmpty then
@@ -449,10 +454,10 @@ private[agent] object AgentFinishTurn:
       // immediate input 开一个独立 turn；其余留队，由后续 turn 边界逐条消费（到达顺序
       // 不变，每件各自若干 turn ⇒ 每件各自 roundComplete / 一次 save / 一次 pipeLlmCall）。
       // 原缺陷⑥「整批塞进一个新 turn」已删除。
-      val (immHead, remainingInputs) = TurnBoundaryDrains.drainHead(
-        state.execution.pendingImmediateInputs,
-        compactionPending = false
-      )
+      // 2026-09-27 裁定（ORCH1-R11）：本边界 drain 决策改指
+      // TurnBoundary.drainForFinishTurnImm（compactionPending = false 实参按站
+      // 传入，决策仍走 TurnBoundaryDrains.drainHead 纯函数）。
+      val (immHead, remainingInputs) = TurnBoundary.drainForFinishTurnImm(state)
       val immInputs = immHead.toList
       logAgentEvent(
         agentDef,
@@ -474,15 +479,22 @@ private[agent] object AgentFinishTurn:
             )
           )
         else IO.unit
-      val immMessages = immInputs.map(imm =>
-        (imm.blocks match
-          case Some(blocks) if blocks.nonEmpty => Message(MessageRole.User, Right(blocks))
-          case _ => Message(MessageRole.User, Left(imm.text))
-        ).copy(source = injectionSourceFor(imm.fromUser, imm.source))
-      )
+      // 2026-09-27 裁定（ORCH1-R7）：四处逐字同形 imm→Message 转换收口
+      // TurnBoundary.immediateInputToMessage。
+      val immMessages = immInputs.map(TurnBoundary.immediateInputToMessage)
       val messagesWithImmediate = newMessages ++ immMessages
       val updatedState = state
         .copy(execution =
+          // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+          // TurnBoundary.withCarriedQueues 默认形仅差 pendingImmediateInputs
+          // 显式覆盖，但站点专属日期注释组（Sub-agent barrier/#25）与本批
+          // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，Battle-2 靶点。
+          // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 = **明确建议**
+          // （`待下批` 字样为历史遗留）：处置方案 = ORCH4 台账⑤ 方案 A（TurnBoundary 边界帧增设
+          // 显式画像实参 carryDelivery/carryProject，逐站传入；成本 ≈ 组装函数签名 + 3 站点实参，
+          // 零新依赖；可行性：高）；不并入本批理由 = 与站点专属日期注释组（Sub-agent barrier/#25）
+          // 耦合，且帧字节不可证等价（ORCH2-P5「禁静默统一」）。落点：`agent/LifecycleEnds.scala`
+          // ORCH5 台账⑤。
           ExecutionContext
             .idle(messagesWithImmediate, state.execution.turnIdx)
             .copy(
@@ -508,6 +520,24 @@ private[agent] object AgentFinishTurn:
         // One blue injected bubble per sourced input — same group, back to back.
         // ② (2026-09-11): 真人输入没有来源标签 ⇒ 也不产注入气泡（fromUser 优先
         // 于 source，与 Message 侧的 injectionSourceFor 同一判据）。
+        // 2026-09-27 裁定（ORCH1-R3 待下批：帧字段与统一形态不可证等价
+        // （MailTool 投递路径）——本腿缺 delivery/project/sessionProject）：
+        // 保留原状，Battle-2 靶点。
+        // 2026-09-27 裁定（ORCH2-P5 定案，禁静默统一）：不可证等价已证毕——
+        // MailTool.sendMail（core/tools/MailTool.scala :2265-2283）构造
+        // ImmediateInput（delivery=Some("immediate")、project=ctx.projectName
+        // 可 Some）经 pendingImmediateInputs 入本腿可见域 ⇒ 并入统一形
+        // TurnBoundary.emitForImmediateInput 会给帧补 "delivery" 键
+        // （emitInjectedUserEvent 的 withDelivery deepMerge）并改 PROJECT 段
+        // header ⇒ 帧字节不等 ⇒ 本批保留原状。下批方案（Battle-4 候选）：在
+        // TurnBoundary 增设边界帧画像实参（carryDelivery/carryProject:
+        // Boolean）或命名 legacy 组装腿，把本调用面组装收进 TurnBoundary 而
+        // 字段省略逐站显式。
+        // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 = **明确建议**
+        // （`待下批` 字样为历史遗留）：处置方案 = 上条 ORCH2-P5 所列方案 A（TurnBoundary 边界帧
+        // 增设显式画像实参 carryDelivery/carryProject，逐站传入；成本 ≈ 组装函数签名 + 3 站点
+        // 实参，零新依赖；可行性：高）；不并入本批理由 = 帧字节不可证等价（防回归铁律），
+        // 并入即改线协议字节。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
         _ <- immInputs.flatMap { imm =>
           injectionSourceFor(imm.fromUser, imm.source).map(src =>
             emitInjectedUserEvent(
@@ -536,7 +566,7 @@ private[agent] object AgentFinishTurn:
           if subagentsInFlight then IO.unit
           else
             completionTargets.traverse_(_ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithImmediate))
-        result <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+        result <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
       yield result
       end for
     else if state.pendingCompaction.isEmpty && state.execution.pendingMailQueueCount > 0 then
@@ -582,6 +612,18 @@ private[agent] object AgentFinishTurn:
                     messagesWithQueue = newMessages ++ List(queueMessage)
                     updatedState = state
                       .copy(execution =
+                        // 2026-09-27 裁定（ORCH1-R8 待下批：本腿携带组装与
+                        // TurnBoundary.withCarriedQueues 默认形仅差
+                        // mailQueueCountDelta = -1 覆盖、且本腿不带
+                        // pendingImmediateInputs（if 梯子前提 ⇒ 队列恒空，携带
+                        // 恒等价，普查已证），但站点专属日期注释组与本批
+                        // 「注释随代码」铁律耦合 ⇒ 不强并）——保留原状，
+                        // Battle-2 靶点。
+                        // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——本项 =
+                        // **明确建议**（`待下批` 字样为历史遗留）：处置方案 = ORCH4 台账⑤ 方案 A
+                        // （TurnBoundary 边界帧显式画像实参，逐站传入；成本 ≈ 组装函数签名 + 3 站点
+                        // 实参，零新依赖）；不并入本批理由 = 帧字节不可证等价（ORCH2-P5「禁静默统一」）
+                        // + 站点专属日期注释组随码铁律。落点：`agent/LifecycleEnds.scala` ORCH5 台账⑤。
                         ExecutionContext
                           .idle(messagesWithQueue, state.execution.turnIdx)
                           .copy(
@@ -599,21 +641,11 @@ private[agent] object AgentFinishTurn:
                     _ <-
                       if !isSubagent then emitSessionBusy(state.wsSend, sid, busy = true)
                       else IO.unit
-                    _ <- emitInjectedUserEvent(
-                      resources,
-                      state.wsSend,
-                      state.sessionId,
-                      item.message,
-                      "mail-queue",
-                      Some("queue"),
-                      Some(item.from),
-                      None,
-                      Some("queue"),
-                      // 气泡四段式统一批（2026-09-15）：legacy 排空腿的 source =
-                      // `"mail-queue"` 不在 KIND 词表内 ⇒ 本腿恒不产 header（旧呈现
-                      // 逐字保持）。PROJECT 段落回级别照传，未来若纳入词表即生效。
-                      sessionProject = state.projectName
-                    )
+                    // 2026-09-27 裁定（ORCH1-R4）：mail-queue legacy 排空腿纯搬名
+                    // TurnBoundary.emitForMailQueueLegacy——字面量
+                    // "mail-queue"/Some("queue")/None/Some("queue") 序列与
+                    // 气泡四段式统一批（2026-09-15）注释逐字随迁方法体。
+                    _ <- TurnBoundary.emitForMailQueueLegacy(resources, state, item.message, item.from)
                     _ <- ctx.forkTurn(
                       (resources.sessionStore.saveMessagesForSession(sid, messagesWithQueue) *>
                         resources.sessionStore.flushIndex)
@@ -628,7 +660,7 @@ private[agent] object AgentFinishTurn:
                         completionTargets.traverse_(
                           _ ! AgentEvent.Completed(state.sessionId.getOrElse(""), messagesWithQueue)
                         )
-                    r <- pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
+                    r <- AgentProcessing.pipeLlmCall(agentDef, resources, depth, parentRef, updatedState, None)
                   yield r
                 // Delivery-layer fingerprint dedup (P0): same sender+recipient+content
                 // within the 30min window is consumed without injection — the
@@ -705,12 +737,18 @@ private[agent] object AgentFinishTurn:
    * Errors are swallowed: a failed status record must never break the turn.
    */
   private[agent] def markTeamBusy(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    if agentDef.category == "team" then
+    // 2026-09-27 裁定（ORCH2-P4）：判定条件收口 TurnBoundary.teamMarkEligible
+    // （category=="team" 门 + sid 存在性折叠，真值表与原 if+fold 逐字等价）；
+    // 写入面（TeamSessionRegistry.markBusy + 错误吞）不动。
+    if TurnBoundary.teamMarkEligible(agentDef, sid) then
       sid.fold(IO.unit)(s => TeamSessionRegistry.markBusy(s).handleErrorWith(_ => IO.unit))
     else IO.unit
 
   private[agent] def markTeamIdle(agentDef: AgentDef, sid: Option[String]): IO[Unit] =
-    if agentDef.category == "team" then
+    // 2026-09-27 裁定（ORCH2-P4）：判定条件收口 TurnBoundary.teamMarkEligible
+    // （与 markTeamBusy 同判据单点）；写入面（TeamSessionRegistry.markIdle +
+    // 错误吞）不动。
+    if TurnBoundary.teamMarkEligible(agentDef, sid) then
       sid.fold(IO.unit)(s => TeamSessionRegistry.markIdle(s).handleErrorWith(_ => IO.unit))
     else IO.unit
 
@@ -725,6 +763,16 @@ private[agent] object AgentFinishTurn:
    * 无关**——废除 08-25 按发送者区分（root→全 team 停）的语义：无关成员的忙碌
    * 不再无限期扣住投递（旧 senderIsRoot 分支连同 isTeamTreeIdle 一并退役）。
    */
+  // 2026-09-27 裁定（ORCH2-P4 判定归口，经门禁审计定案补做；同轮按门禁包边
+  // 记账反馈修复）：本方法的 internalIdle + && 组合判定收口
+  // TurnBoundary.mailDrainGateIdle（纯 Boolean 函数）；树空闲调用
+  // （MailIdleGate.isAgentTreeIdle 既有唯一实现，checkStatus =
+  // !skipSelfStatus 取反语义，2026-08-28 01:00 统一裁定见上方 scaladoc）
+  // 留守本站点——本站点本已持有 agent→core 包边，归口侧不因此新增 core
+  // 引用（本批包边预算仅允许 →shared/→actor 记账增长）；本方法两枚 IO
+  // 取数 registry / RunningFlowRegistry.list = 既有唯一实现本体不动
+  // （委托链 AgentActor.fullyIdle 零触碰，无转发 shim）。
+  // 2026-09-27 裁定（ORCH3-R1 / ORCH3-P1，适用预批 P1）：T4 收面撤销前条保留——委托 def 已删除，调用点改指 AgentFinishTurn.fullyIdle；原注保留存证。
   private[agent] def fullyIdle(
     sid: String,
     state: AgentState,
@@ -734,10 +782,10 @@ private[agent] object AgentFinishTurn:
     for
       registry <- resources.agentRegistry.get
       flows <- nebflow.core.flow.RunningFlowRegistry.list
-      // agent 内部权威 barrier（registry 快照之外的一层防御）
-      internalIdle = state.execution.outstandingSubagentResults == 0
-      selfOk = nebflow.core.flow.MailIdleGate.isAgentTreeIdle(sid, registry, flows, checkStatus = !skipSelfStatus)
-    yield selfOk && internalIdle
+    yield TurnBoundary.mailDrainGateIdle(
+      nebflow.core.flow.MailIdleGate.isAgentTreeIdle(sid, registry, flows, checkStatus = !skipSelfStatus),
+      state
+    )
 
   /** Emit a WS event so the frontend removes a pending mail-queue item. */
   private[agent] def emitDequeuedWs(wsSend: Json => IO[Unit], sessionId: String, itemId: String): IO[Unit] =

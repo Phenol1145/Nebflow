@@ -120,6 +120,20 @@ object NodeRunner:
     withTracking: Boolean = true
   )
 
+  // 2026-09-28 裁定（`ORCH4-P4` restart 漂移 = 行为修复非保持 ⇒ 登记为**「ORCH4 修复候选，待用户拍板」**；本批仅行侧并置注、**零代码**、不得顺手修；并置注授权 = ORCH4-R4）：
+  // 本 `SpawnParams` 是 Delegate/SubTask/flow 三轨 spawn 的参数面，也是
+  // **restart 重建路径**的唯一实参载体（重建点 = agent/SharedResources.scala 的
+  // `spawnSupervisedAdapter` 内 `childSpawnFn` → `spawnAgentActor(params.copy(
+  // initialMessages = recoveredMessages, withTracking = false))`）。
+  // **丢字段事实（结构性）**：`SpawnParams` 27 字段 vs `AgentActor.apply` 34 参数 ⇒
+  // `rulesMd` / `agentsMd` / `folderId` / `gitBranch` / `freezeExempt` /
+  // `compactThresholdRatio` 六字段无位可载，且 `contextWindow` 恒取
+  // `SharedResources.contextWindow`（无覆盖位）⇒ 经本面重建的 AgentActor 上达六参
+  // 恒为默认、contextWindow 恒为全局值。今日无现场漂移（三轨站点本就不传这六参）；
+  // 潜伏面 = depth=0 根构造若改经本通用面则其四参会被吞（本批改走 root 专用面
+  // `SharedResources.RootSpawnParams` 规避，见该文件 `spawnRootAgent`）。
+  // 本批只标注、不修，亦**不得**把六字段加宽进本参数面（ORCH4-R4①「不得被迫传新参」）。
+
   /**
    * 共享 spawn:readTracker/fileHistory 创建 + AgentActor spawn。
    * 严格DAG第⑥步第三批A裁定(dwfq-5c7a31ea-1,R-C):方法体逐字迁

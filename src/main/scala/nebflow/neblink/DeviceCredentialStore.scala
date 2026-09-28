@@ -7,7 +7,7 @@ import io.circe.parser.decode
 import io.circe.syntax.*
 import nebflow.core.*
 import nebflow.neblink.CredentialDiagnostics.{CredentialStoreError, Diagnostic, Op}
-import nebflow.shared.{NebflowLogger, PathUtil}
+import nebflow.shared.{CredentialFileAcl, NebflowLogger, PathUtil}
 
 /**
  * Long-lived per-device NebLink credential, persisted to

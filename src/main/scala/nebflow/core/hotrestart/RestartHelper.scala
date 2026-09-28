@@ -1,4 +1,4 @@
-package nebflow.core
+package nebflow.core.hotrestart
 
 import nebflow.shared.{NebflowLogger, PathUtil}
 

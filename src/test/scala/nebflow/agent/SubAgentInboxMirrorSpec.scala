@@ -56,6 +56,11 @@ class SubAgentInboxMirrorSpec extends FunSuite:
   // 迁至 AgentProcessing.scala，聚合再扩该文件（合计仍 12 = 11 处调用 + 1 处
   // def，调用点文本逐字未动）。
   private lazy val agentProcessing: String = read("src/main/scala/nebflow/agent/AgentProcessing.scala")
+  // re-pin（2026-09-27 ORCH1-R12 TurnBoundary 收敛）：8 处调用点的调用面组装收口进
+  // TurnBoundary.scala 命名方法（唯一实现=组装+守卫；帧构造 def 留驻 AgentActor，
+  // ORCH1-R6），③-2 的聚合计数判据再扩该文件——哨兵语义（发射协议站点计数、
+  // def 单点）保持。
+  private lazy val turnBoundary: String = read("src/main/scala/nebflow/agent/TurnBoundary.scala")
   private lazy val mirrorSrc: String = read("src/main/scala/nebflow/agent/InjectedInboxMirror.scala")
   private lazy val utilsJs: String = read("src/main/resources/web/js/utils.js")
   private lazy val chatJs: String = read("src/main/resources/web/js/chat.js")
@@ -312,7 +317,7 @@ class SubAgentInboxMirrorSpec extends FunSuite:
     )
   }
 
-  test("③ -2 单点收口：注入行唯一发射点仍在，11 处调用点零改，镜像腿挂在发射点内") {
+  test("③ -2 单点收口：注入行唯一发射点仍在，调用点收敛计数不变，镜像腿挂在发射点内") {
     assertEquals(
       "\"injected\" -> true.asJson".r.findAllMatchIn(agentActor).size,
       1,
@@ -332,14 +337,27 @@ class SubAgentInboxMirrorSpec extends FunSuite:
     // （recoverable-abort 注入 / tools-complete 注入 / external-event 气泡）
     // 随实现迁至 AgentProcessing.scala，聚合再扩该文件（合计仍 12 = 11 处
     // 调用 + 1 处 def，调用点文本逐字未动）。
+    // re-pin（2026-09-27 ORCH1-R12 TurnBoundary 收敛，照 cd4a56a 先例）：11 处
+    // 调用点中 8 处的调用面组装改指 TurnBoundary.scala 命名方法（方法体内
+    // `AgentActor.emitInjectedUserEvent(` 共 5 处 + 原地留守 3 处：
+    // AgentIdle UserInput 直投腿 / AgentProcessing recoverable-abort 腿 /
+    // AgentFinishTurn turn-末 imm 腿，后两者 = ORCH1-R3 待下批靶点），聚合并入
+    // TurnBoundary.scala 后合计 = 9（8 处调用 + 1 处 def）——发射协议站点计数
+    // 语义保持：帧构造 def 仍全仓唯一（ORCH1-R6），禁新增第二发射面。
+    // 2026-09-28 裁定（ORCH5-P5 / ORCH5-R1：承接盘点末批三态收敛）——上句
+    // `ORCH1-R3 待下批靶点` 为历史遗留，本项末批收敛态 = **明确建议**：方案 A
+    // （TurnBoundary 边界帧显式画像实参 carryDelivery/carryProject，逐站传入；成本
+    // ≈ 组装函数签名 + 3 站点实参，零新依赖）留独立批次，理由 = 帧字节不可证等价
+    // （ORCH2-P5「禁静默统一」）。本断言面（站点计数 9 语义）**零改动**。
     assertEquals(
       "emitInjectedUserEvent\\(".r.findAllMatchIn(agentActor).size +
         "emitInjectedUserEvent\\(".r.findAllMatchIn(agentFinishTurn).size +
         "emitInjectedUserEvent\\(".r.findAllMatchIn(agentFrozen).size +
         "emitInjectedUserEvent\\(".r.findAllMatchIn(agentIdle).size +
-        "emitInjectedUserEvent\\(".r.findAllMatchIn(agentProcessing).size,
-      12,
-      "`emitInjectedUserEvent(` 命中数漂移（应为 11 处调用 + 1 处 def，跨 AgentActor + AgentFinishTurn + AgentFrozen + AgentIdle + AgentProcessing 聚合）——本批禁改调用点"
+        "emitInjectedUserEvent\\(".r.findAllMatchIn(agentProcessing).size +
+        "emitInjectedUserEvent\\(".r.findAllMatchIn(turnBoundary).size,
+      9,
+      "`emitInjectedUserEvent(` 命中数漂移（应为 8 处调用 + 1 处 def，跨 AgentActor + AgentFinishTurn + AgentFrozen + AgentIdle + AgentProcessing + TurnBoundary 聚合）——禁新增第二发射面"
     )
     val emitStart = agentActor.indexOf("private[agent] def emitInjectedUserEvent(")
     val applyStart = agentActor.indexOf("\n  def apply(", emitStart)

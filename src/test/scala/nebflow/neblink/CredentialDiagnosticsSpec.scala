@@ -206,7 +206,7 @@ class CredentialDiagnosticsSpec extends FunSuite:
     val cred = DeviceCredential("https://neblink.example", "n-1", "d-1", "tok")
     val (result, warns) = withWarns(
       DeviceCredential
-        .save(cred, nebflow.core.CredentialFileAcl.systemPort, nebflow.core.CredentialFileAcl.currentOsName)
+        .save(cred, nebflow.shared.CredentialFileAcl.systemPort, nebflow.shared.CredentialFileAcl.currentOsName)
         .attempt
         .unsafeRunSync()
     )

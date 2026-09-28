@@ -6,7 +6,7 @@ import nebflow.actor.*
 import nebflow.core.*
 import nebflow.core.entity.{EntityLoader, TeamCatalog}
 import nebflow.core.skill.SkillService
-import nebflow.shared.*
+import nebflow.shared.{HeadlessMode, *}
 
 /**
  * Unified context refresh for session-scoped resources.

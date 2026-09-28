@@ -182,7 +182,7 @@ object SingleInstanceGuard:
   def focusExisting(url: String, reason: String, openBrowser: Boolean): IO[Unit] =
     IO.println(s"nebflow is already running ($reason)") *>
       IO.println(s"focusing existing instance: $url") *>
-      IO.whenA(openBrowser && !nebflow.core.HeadlessMode.enabled)(openBrowserTo(url))
+      IO.whenA(openBrowser && !nebflow.shared.HeadlessMode.enabled)(openBrowserTo(url))
 
   private def openBrowserTo(url: String): IO[Unit] = IO.blocking {
     val os = sys.props.getOrElse("os.name", "").toLowerCase

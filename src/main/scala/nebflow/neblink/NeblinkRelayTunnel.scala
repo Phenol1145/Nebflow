@@ -604,7 +604,7 @@ final class NeblinkRelayTunnel(
           RemoteUpdateAction.runInstallScript(beta).flatMap {
             case Right(msg) =>
               // Schedule restart — same logic as RestApiRoutes POST /neblink/update
-              IO.blocking(nebflow.core.RestartHelper.spawnRestart()) *>
+              IO.blocking(nebflow.core.hotrestart.RestartHelper.spawnRestart()) *>
                 IO.delay(dispatcher.unsafeRunAndForget(IO.sleep(1.second) *> IO(System.exit(0)))) *>
                 IO.pure((msg, ""))
             case Left(err) => IO.pure(("", err))

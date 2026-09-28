@@ -2,8 +2,8 @@ package nebflow.social
 
 import io.circe.syntax.*
 import io.circe.{Json, JsonObject}
-import nebflow.core.{AtomicJson, CredentialFileAcl}
-import nebflow.shared.PathUtil
+import nebflow.core.AtomicJson
+import nebflow.shared.{CredentialFileAcl, PathUtil}
 
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.{Files, Path, StandardOpenOption}

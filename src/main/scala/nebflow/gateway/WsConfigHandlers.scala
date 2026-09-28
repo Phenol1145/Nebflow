@@ -565,7 +565,7 @@ private[gateway] object WsConfigHandlers:
     import ctx.*
     configService.isConfigured.flatMap { configured =>
       configService.getConfig.flatMap { cfg =>
-        nebflow.core.OnboardingService.readState().flatMap { onboarding =>
+        nebflow.gateway.OnboardingService.readState().flatMap { onboarding =>
           wsSend(
             io.circe.Json.obj(
               "type" -> "configData".asJson,
@@ -593,9 +593,9 @@ private[gateway] object WsConfigHandlers:
     // surface can no longer bypass the gate the frontend enforces.
     val stJson = parsedJson(text)
     val stStr = stJson.hcursor.downField("state").as[String].getOrElse("")
-    nebflow.core.OnboardingService.OnboardingState.fromString(stStr) match
+    nebflow.gateway.OnboardingService.OnboardingState.fromString(stStr) match
       case Some(st) =>
-        nebflow.core.OnboardingService.setState(st).flatMap {
+        nebflow.gateway.OnboardingService.setState(st).flatMap {
           case Right(applied) =>
             wsSend(io.circe.Json.obj("type" -> "onboardingStateSet".asJson, "state" -> applied.name.asJson))
           case Left(reason) =>
@@ -626,7 +626,7 @@ private[gateway] object WsConfigHandlers:
     // Onboarding HARD GATE (user ruling 2026-08-15): one real LLM call
     // through the global chain. The welcome message may only be sent
     // after this returns ok=true.
-    nebflow.core.OnboardingService.probeLlm(sharedResources.llm).flatMap { pr =>
+    nebflow.gateway.OnboardingService.probeLlm(sharedResources.llm).flatMap { pr =>
       wsSend(
         io.circe.Json.obj(
           "type" -> "probeResult".asJson,

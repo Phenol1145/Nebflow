@@ -34,11 +34,6 @@ lazy val root = (project in file("."))
     scalaVersion := "3.5.2",
 
     libraryDependencies ++= Seq(
-      // CLI
-      scopt,
-      // Terminal
-      jline3Terminal,
-      jline3Reader,
       // HTTP client
       sttpCore,
       sttpFs2Backend,

@@ -116,10 +116,10 @@ private[agent] trait AgentRegistryEmit:
       resources.agentRegistry.modify { m =>
         m.get(sid) match
           case Some(rec) =>
-            // turn 起点：仅当本会话此前不在 Processing（WaitingForUser 是同一
-            // turn 内的人机交互子态，不算新 turn 起点）。
-            val turnBegan =
-              turnStart && rec.status != AgentStatus.Processing && rec.status != AgentStatus.WaitingForUser
+            // 2026-09-27 裁定（ORCH2-P4）：turn 起点相位判定收口
+            // TurnBoundary.isTurnStartTransition（原判定注释逐字随迁该法）；
+            // modify 写入本体逐字不动（唯一写面）。
+            val turnBegan = TurnBoundary.isTurnStartTransition(rec.status, turnStart)
             val withTurn = if turnBegan then rec.copy(turnStartedAt = now) else rec
             val withPhase = toolStarting match
               case Some((name, startedAt)) =>
@@ -132,8 +132,10 @@ private[agent] trait AgentRegistryEmit:
                 if clearToolPhase then
                   withTurn.copy(currentToolName = None, currentToolStartedAt = 0L, currentToolDeadlineMs = 0L)
                 else withTurn
+            // 2026-09-27 裁定（ORCH2-P4）：「离开 Processing 一律清工具相位」
+            // 判定收口 TurnBoundary.keepsToolPhase；写面不动。
             val phased =
-              if status == AgentStatus.Processing then withPhase
+              if TurnBoundary.keepsToolPhase(status) then withPhase
               else withPhase.copy(currentToolName = None, currentToolStartedAt = 0L, currentToolDeadlineMs = 0L)
             (m.updated(sid, phased.copy(status = status, lastActivityMs = now)), ())
           case None => (m, ())
