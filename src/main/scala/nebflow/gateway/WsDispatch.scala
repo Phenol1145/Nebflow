@@ -50,7 +50,8 @@ private[gateway] object WsDispatch:
     WsFileOpsHandlers.handlers,
     WsDropboxHandlers.handlers,
     WsMemoryFoldersHandlers.handlers,
-    WsSystemHandlers.handlers
+    WsSystemHandlers.handlers,
+    WsIrHandlers.handlers // 命令 IR 路由层(P0):`ir` 帧
   ).reduce(_ ++ _)
 
   /**

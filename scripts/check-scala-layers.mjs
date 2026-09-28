@@ -42,7 +42,11 @@ const EXEMPT_PATH = join(ROOT, 'scripts', 'layer-exemptions.json');
 const LAYER_ORDER = [
   'shared',   // 底层:纯支撑面(日志等),零上层依赖
   'actor',    // 底层:actor 原语
-  'core',     // 引擎核心:只准依赖底下两层(C/D 步倒置 core→agent/core→gateway 后成形)
+  'ir',       // 命令 IR 路由层(Command IR Router P0,2026-09-28):能力 IR/注册表/策略/执行器。
+              // 层位在 core 之下——[T1] 裁定面:core.tools 现依赖 agent/gateway,P0 的 IR 若
+              // 落 core 会继承那些反向边;独立包=独立层=可被门禁约束(VFS 根/安全档/审计落点
+              // 一律由装配面单向注入,本包看不见 core 及以上)。
+  'core',     // 引擎核心:只准依赖底下三层(C/D 步倒置 core→agent/core→gateway 后成形)
   'llm',      // 适配层:协议面在上、core 在下
   'bridge',
   'dropbox',
