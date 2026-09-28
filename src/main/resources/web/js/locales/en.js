@@ -1178,6 +1178,8 @@ export default {
   'slash.mentionSkill': 'Skill',
   'slash.mentionProjectHint': 'Reference a project (followed by its name, e.g. @project:name)',
   'slash.mentionFlowHint': 'Reference a flow (followed by its name, e.g. @flow:name)',
+  'slash.mentionSkillHint': 'Reference a skill (followed by its name, e.g. @skill:name)',
+  'slash.skillUsage': 'Usage: /skill:<name> [optional input]',
   'slash.mentionFileRoot': 'Path under the session workspace root',
   'slash.mentionFileCwd': 'Relative path under the session workspace root',
   'slash.mentionFileHome': 'Path under the user home directory',

@@ -110,12 +110,39 @@ export function registerSkillCommands(skills) {
 // ---------- Slash Command Handler ----------
 export function handleSlash(text) {
   const cmd = text.trim().split(/\s/)[0]; // 解析**先于**判定（D1-B：白名单按命令名判）
+  // /skill:name [input] —— 内联执行技能（2026-09-27 语法统一：$name 退役，/ 执行 · @ 引用）。
+  // 与 /clear /compact 同列的内置固定形式，不受封存白名单管辖（作者指令放行）。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    const rest = text.trim().slice(cmd.length).trim();
+    if (name) dispatchSkillInline(name, rest);
+    else renderSystemBubble(t('slash.skillUsage'));
+    return true;
+  }
   if (!slashAllowed(cmd)) return false; // SEALED: '/' is plain text（白名单两条除外）
   if (slashCommands[cmd] && slashCommands[cmd].run) {
     slashCommands[cmd].run(text);
     return true;
   }
   return false;
+}
+
+/**
+ * `/skill:name [input]` 内联执行（2026-09-27）——**执行体住在 input.js**（它拥有队列族
+ * `queueMessage` 与真人 turn 标志 `markRealUserTurn`；本模块反向 import input.js 会成静态
+ * import 环，`check-circular` 门禁红）。故由 input.js 在装配时注册一次，取本仓既有的注入
+ * 惯例（`registerSkillCommands` / `setMentionFlowEntries` 同款），此处只留派发单点。
+ */
+let skillInlineDispatch = null;
+
+/** input.js 注册 `/skill:` 执行体：`(skillName, skillInput) => void`。 */
+export function setSkillInlineDispatch(fn) {
+  skillInlineDispatch = fn;
+}
+
+/** `/skill:name [input]` 派发单点（`handleSlash` 与 `pickSlashCommand` 共用）。 */
+function dispatchSkillInline(skillName, skillInput) {
+  skillInlineDispatch?.(skillName, skillInput);
 }
 
 // ---------- Slash Autocomplete ----------
@@ -127,9 +154,23 @@ export function updateSlashDropdown() {
     return;
   }
   const query = text.slice(1).toLowerCase();
-  activeView.slashMatches = Object.entries(slashCommands)
-    .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
-    .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+  // /skill: 前缀形态（2026-09-27 语法统一）：列出技能名册，拾取即内联执行
+  if (query.startsWith('skill:')) {
+    const sk = query.slice('skill:'.length);
+    activeView.slashMatches = Object.values(slashCommands)
+      .filter(info => info._skill && info._skillName)
+      .filter(info => sk === '' || String(info._skillName).toLowerCase().startsWith(sk))
+      .slice(0, 50)
+      .map(info => ({ cmd: '/skill:' + info._skillName, desc: typeof info.desc === 'function' ? info.desc() : (info.desc || ''), whenToUse: info.argumentHint || '', isSkill: true, source: info._source || '', skillName: info._skillName }));
+  } else {
+    activeView.slashMatches = Object.entries(slashCommands)
+      .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
+      .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+    // 发现式：键入 /sk… 时提示 /skill: 形态（空查询不提示——'/' 保持既有两条命令的列表）
+    if (query.length > 0 && 'skill:'.startsWith(query)) {
+      activeView.slashMatches.unshift({ cmd: '/skill:', desc: t('slash.skillUsage'), whenToUse: '', isSkill: true, source: '', skillName: '' });
+    }
+  }
   if (activeView.slashMatches.length === 0) {
     closeSlashDropdown();
     return;
@@ -202,6 +243,13 @@ export function pickSlashCommand(index) {
   activeView.dom.input.style.height = 'auto';
   closeSlashDropdown();
   activeView.dom.input.focus();
+  // /skill: 条目（2026-09-27）：有名字 → 内联执行；仅形态提示 → 回填输入框续输参数。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    if (name) dispatchSkillInline(name, '');
+    else { activeView.dom.input.value = '/skill:'; updateSlashDropdown(); }
+    return;
+  }
   if (slashCommands[cmd] && slashCommands[cmd].run) slashCommands[cmd].run();
 }
 

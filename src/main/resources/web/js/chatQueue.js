@@ -118,7 +118,7 @@ export function renderQueueBar(sessionId, handlers = {}) {
 	    textEl.className = 'queue-item-text';
 	    const fullText = item.mode === 'compact'
 	      ? `/compact ${item.text}`.trim()
-	      : item.skillName ? `/${item.skillName} ${item.text}` : item.text;
+	      : item.skillName ? `/skill:${item.skillName} ${item.text}`.trim() : item.text;
 	    textEl.textContent = fullText;
 	    // Always allow click-to-expand — CSS truncates by container width,
 	    // not character count, so even short messages may be visually clipped.
