@@ -22,6 +22,30 @@ import cats.effect.IO
  */
 object AtomicJson:
 
+  /** Windows 瞬态句柄竞态的有界重试参数（见 [[moveAtomically]]）。 */
+  private val MoveRetryAttempts = 5
+  private val MoveRetryBackoffMs = 20L
+
+  /**
+   * Windows 瞬态句柄竞态的宽容重试（2026-09-29，全量回归 TriggerChainSpec T-C 修复）：
+   * POSIX rename 允许替换「正被打开读取」的目标；Windows 对同一操作回
+   * `AccessDeniedException`（另一个读方/杀软扫描短暂持有目标句柄——全量回归负载下
+   * 的实测形态：`flow-map.json.tmp.<uuid> -> flow-map.json` 被拒，detached trigger
+   * 失败、waitUntil 超时）。有界重试（短线性退避，总上限 ~200ms）只**重放同一个
+   * 原子 move**，不改原子-or-fail 语义；超限仍抛出原异常（fail-loud 不变）。
+   */
+  private def moveAtomically(
+      tmp: java.nio.file.Path,
+      target: java.nio.file.Path,
+      options: Seq[java.nio.file.StandardCopyOption],
+      attempt: Int = 1
+  ): Unit =
+    try java.nio.file.Files.move(tmp, target, options*)
+    catch
+      case e: java.nio.file.AccessDeniedException if attempt < MoveRetryAttempts =>
+        Thread.sleep(MoveRetryBackoffMs * attempt)
+        moveAtomically(tmp, target, options, attempt + 1)
+
   /** Effectful write — runs on the blocking thread pool. */
   def write(path: os.Path, content: String): IO[Unit] =
     IO.blocking(writeSync(path, content))
@@ -34,11 +58,13 @@ object AtomicJson:
     val tmp = path / os.up / s"${path.last}.tmp.${java.util.UUID.randomUUID()}"
     try
       os.write.over(tmp, content, createFolders = true)
-      java.nio.file.Files.move(
+      moveAtomically(
         tmp.toNIO,
         path.toNIO,
-        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-        java.nio.file.StandardCopyOption.ATOMIC_MOVE
+        Seq(
+          java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+          java.nio.file.StandardCopyOption.ATOMIC_MOVE
+        )
       )
     catch
       case e: Throwable =>
@@ -67,11 +93,7 @@ object AtomicJson:
       try ch.force(true)
       finally ch.close()
       try
-        java.nio.file.Files.move(
-          tmp.toNIO,
-          path.toNIO,
-          java.nio.file.StandardCopyOption.ATOMIC_MOVE
-        )
+        moveAtomically(tmp.toNIO, path.toNIO, Seq(java.nio.file.StandardCopyOption.ATOMIC_MOVE))
       catch
         case _: java.nio.file.AtomicMoveNotSupportedException =>
           // Providers without atomic move support: degrade to a replacing

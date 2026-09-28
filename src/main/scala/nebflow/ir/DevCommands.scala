@@ -26,6 +26,12 @@ object DevCommands:
       .asObject
       .get
 
+  // P1-1 人侧 argv 糖的形参表（§7.1/§9）：`path` 同时开 flag（`--path .`）与
+  // positional（`/dev:fs:ls .`）双形态；不给 ⇒ 键缺席（default 不注入，[D19]：
+  // ls 列 VFS 根 / cat 读 stdin 的语义不变）。`name "path"` ∈ fsSchema.properties
+  // ⇒ 过注册期校验；单槽 0 ⇒ 过「positional 无跳号」守卫。
+  private val fsParams: List[Param] = List(Param("path", positional = Some(0), required = false))
+
   val fsLs: CommandDef = CommandDef(
     name = "dev:fs:ls",
     description = "List VFS entries as JSONL: {name,path,kind,size?} sorted by name.",
@@ -34,6 +40,7 @@ object DevCommands:
     io = CommandIo(stdin = None, stdout = StreamKind.Jsonl),
     pathArgs = Set("path"),
     caps = Set(Cap.FsRead(".")),
+    params = fsParams,
     delivery = Delivery.Both,
     trust = Trust.Builtin,
     audiences = Set(Audience.Human)
@@ -47,6 +54,7 @@ object DevCommands:
     io = CommandIo(stdin = Some(StreamKind.Text), stdout = StreamKind.Text),
     pathArgs = Set("path"),
     caps = Set(Cap.FsRead(".")),
+    params = fsParams,
     delivery = Delivery.Both,
     trust = Trust.Builtin,
     audiences = Set(Audience.Human)

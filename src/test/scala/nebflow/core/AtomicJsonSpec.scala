@@ -67,4 +67,32 @@ class AtomicJsonSpec extends CatsEffectSuite:
     }
   }
 
+  test("transient AccessDenied on the rename target is retried, not surfaced (Windows handle race)") {
+    // 2026-09-29 全量回归修复的回归钉：Windows 的 rename-replace 需要对目标的
+    // delete 访问，而 Java NIO 读句柄默认不带 FILE_SHARE_DELETE ⇒ 目标正被读取
+    // 时一次性 move 回 AccessDeniedException（POSIX rename 则允许）。实测形态 =
+    // TriggerChainSpec T-C：detached trigger 写 flow-map.json 被并发读方拒绝。
+    // 断言：读方在重试窗口内（这里 ~50ms < 总退避 ~200ms）放手 ⇒ 写成功且内容
+    // 完整、无 tmp 残留。POSIX 上本场景一次 move 即成功，用例平凡通过（不证
+    // 伪，只保 Windows 侧不回归）。
+    for
+      dir <- IO(os.temp.dir())
+      f = dir / "raced.json"
+      _ <- IO(AtomicJson.writeSync(f, "{\"v\":1}"))
+      // 读句柄在另一线程持有 50ms 后关闭；写方与之并发
+      readerFiber <- IO {
+        val in = java.nio.file.Files.newInputStream(f.toNIO)
+        in.read() // 真正打开句柄
+        in
+      }.flatMap { in =>
+        IO.sleep(50.millis) *> IO(in.close())
+      }.start
+      _ <- IO(AtomicJson.writeSync(f, "{\"v\":2}")).guarantee(readerFiber.join.void)
+      content <- IO(os.read(f))
+      residue <- IO(os.list(dir).filter(_.last.contains(".tmp.")))
+    yield
+      assertEquals(content, "{\"v\":2}")
+      assertEquals(residue.toList, List.empty[os.Path])
+  }
+
 end AtomicJsonSpec

@@ -374,6 +374,14 @@ final class Router(
   private def invalid(requestId: String, err: IrError): PlanResult =
     PlanResult(requestId = requestId, status = Status.Invalid, exit = Some(exitFor(err)), error = Some(err))
 
+  /**
+   * 糖腿（P1-1）lowering 错误的成形出口：把 lowering 期（进 Planner 之前）的 [[IrError]]
+   * 包成 `status=invalid` 的响应信封——退出码/形态与直连 `ir` 腿的计划非法路径**完全
+   * 同源**（§6.4：`name_invalid`/`invalid_args` → 2、`unknown_command` → 127）。public
+   * 单行包装既有 [[invalid]]/[[exitFor]]，错误面不另起炉灶（单一 code 原则的形面版）。
+   */
+  def invalidResult(requestId: String, err: IrError): PlanResult = invalid(requestId, err)
+
   /** §6.4：`status=invalid` 的计划级退出码 = 首个致因的码。 */
   private def exitFor(err: IrError): Int = err.code match
     case Codes.UnknownCommand => ExitCode.UnknownCommand

@@ -92,6 +92,30 @@ final class CommandRegistry(workspaceTrusted: Boolean = true):
 
   private def validateParams(cmd: CommandDef): Either[IrError, Unit] =
     val declared = cmd.argsSchema("properties").flatMap(_.asObject).map(_.keys.toSet).getOrElse(Set.empty)
+    val positional = cmd.params.flatMap(_.positional)
+    // ① §9:543 红线 4：`mcp:`/`ext:` 的 params 恒为空（v1 不为 MCP 造 argv 糖，外部面只有 --json）
+    val foreignEmpty: Either[IrError, Unit] =
+      if (cmd.binding.isInstanceOf[Binding.Mcp] || cmd.binding.isInstanceOf[Binding.Node]) && cmd.params.nonEmpty then
+        Left(
+          IrError
+            .invalidArgs(
+              s"command '${cmd.name}' is ${Binding.namespace(cmd.binding)}-bound: params must stay empty " +
+                "(§9 red line 4 — the foreign face is --json only)"
+            )
+            .withDetail("reason", "params_foreign_empty".asJson)
+            .withDetail("namespace", Binding.namespace(cmd.binding).asJson)
+        )
+      else Right(())
+    // ② positional 槽位排序后必须 == 0..n-1（§9「按 Param.positional 升序绑定，不得跳号」前移到注册期）
+    val noGaps: Either[IrError, Unit] =
+      if positional.sorted != (0 until positional.length).toList then
+        Left(
+          IrError
+            .invalidArgs("positional slots must be 0..n-1 without gaps or duplicates (§9 binds by ascending index)")
+            .withDetail("reason", "positional_gap".asJson)
+            .withDetail("slots", positional.sorted.asJson)
+        )
+      else Right(())
     cmd.params.find(p => !declared.contains(p.name)) match
       case Some(p) =>
         Left(
@@ -100,10 +124,19 @@ final class CommandRegistry(workspaceTrusted: Boolean = true):
             .withDetail("param", p.name.asJson)
         )
       case None =>
-        val positional = cmd.params.flatMap(_.positional)
-        if positional.distinct.length != positional.length then
-          Left(IrError.invalidArgs("duplicate positional index in params"))
-        else Right(())
+        for
+          _ <- foreignEmpty
+          _ <-
+            // 重复槽位是 ② 的特例，先以独立报错面钉住（同站点双守卫）
+            if positional.distinct.length != positional.length then
+              Left(IrError.invalidArgs("duplicate positional index in params"))
+            else Right(())
+          _ <- noGaps
+        yield ()
+
+    end match
+
+  end validateParams
 
   /** §7.5：`Audience.Llm ∈ audiences ⇒ llmName 必须声明`，且**必须**全局唯一。 */
   private def validateLlmName(cmd: CommandDef): Either[IrError, Unit] =

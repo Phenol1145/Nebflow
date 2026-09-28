@@ -11,7 +11,7 @@ import cats.effect.IO
 import io.circe.syntax.*
 import io.circe.Json
 import nebflow.ir.*
-import nebflow.shared.{NebflowLogger, PathUtil}
+import nebflow.shared.{NebflowLogger, PathUtil, UiMessage}
 
 import java.time.{Instant, ZoneOffset}
 import java.time.format.DateTimeFormatter
@@ -44,6 +44,9 @@ private[gateway] object IrGateway:
 
   def instance: Router = router
 
+  /** 糖腿查表（P1-1）：`ArgvSugar.lower` 的 lookup 参数（params 是 argv 唯一权威面，§7.1）。 */
+  def lookup(name: String): Option[CommandDef] = registry.get(name)
+
   /**
    * 审计落点：`<dataRoot>/logs/ir/<yyyyMMdd>.jsonl`（[T6] 的独立面选项；`ToolsLogWriter`
    * 在 core，本包层位看不见它，故落点由装配面提供）。best-effort：任何失败只 WARN，
@@ -68,6 +71,108 @@ private[gateway] object WsIrHandlers:
   private[gateway] val handlers: Map[String, WsDispatch.WsHandler] = Map(
     "ir" -> handleIr
   )
+
+  /** 人侧三腿：typeless（无 `type` 键）+ `immediateInput`（浏览器）+ `userMessage`（CLI）。 */
+  private val SugarLegs: Set[String] = Set("", "immediateInput", "userMessage")
+
+  /** 附件/引用类键：任一非空 ⇒ 不 lower（fail-open——糖是纯文本特性，转发/附件语义不归 IR）。 */
+  private val SugarPayloadKeys: List[String] = List("attachments", "refs", "taskRefs")
+
+  /**
+   * 分流闸（P1-1，纯函数可单测；`WebSocketRoutes.handleMessage` 在 msgType 取值之后、
+   * `WsDispatch.handlers` 派发之前调用——一处覆盖三腿 + REST `handleMessagePublic`）：
+   *
+   * 命中 = msgType ∈ 三腿 ∧ content（trim）非空 ∧ attachments/refs/taskRefs 键全空 ∧
+   * `ArgvSugar.humanShape(content)`（首段 ∈ {dev,mcp,ext,bash} 且 ≥2 段；`//` 转义与
+   * `/clear` 族保留名天然被拒——白名单正向判定的补就是保留名集合，无需另维护清单）。
+   * §9:547 的「未被既有闸消费的 `/…` 才 lower」由此钉死：命中 ⇒ 整帧归 IR 糖腿
+   * （不进 WsDispatch 既有 handler、不投 `AgentCommand`）；未命中 ⇒ 既有腿逐字节不变。
+   */
+  def shouldLowerToSugar(msgType: String, frame: Json): Boolean =
+    SugarLegs.contains(msgType) && {
+      val content = frame.hcursor.downField("content").as[String].getOrElse("")
+      content.trim.nonEmpty &&
+      SugarPayloadKeys.forall(k => payloadEmpty(frame, k)) &&
+      ArgvSugar.humanShape(content)
+    }
+
+  /** 键缺席/null/空数组 ⇒ 空；非空数组或任何非数组非 null 值 ⇒ 非空（fail-open 不 lower）。 */
+  private def payloadEmpty(frame: Json, key: String): Boolean =
+    frame.hcursor.downField(key).focus match
+      case None => true
+      case Some(v) => v.isNull || v.asArray.exists(_.isEmpty)
+
+  /**
+   * 人侧 argv 糖的 lowering 入口（P1-1）。准入不得低于文本腿（热重启批 §3.3 的
+   * choke 点同款）：先 `admitWorkOrRefuse`（draining 拒绝并回 workRefused），体内
+   * `IO.uncancelable`（断连存活，同 typeless 腿先例）。顺序：
+   *
+   *   sessionId 空回 invalid 帧（同 handleIr 形）→ user 气泡（UiMessage.User 原文，
+   *   记录面同 dispatchUserText）→ `ArgvSugar.lower` → Left ⇒ `Router.invalidResult`
+   *   同形错误；Right ⇒ 服务端构信封（tenant=human/console 常量、ingress=human、
+   *   requestId=UUID）submit。两条出口都回 `irResult` 帧 + `ir.sugar` 系统气泡
+   *   （best-effort warn 不阻塞）。
+   */
+  def handleHumanSugar(ctx: WsDispatchCtx, text: String, wsSend: Json => IO[Unit]): IO[Unit] =
+    import ctx.*
+    val frame = WsDispatch.parsedJson(text)
+    val sessionId = frame.hcursor.downField("sessionId").as[String].getOrElse("")
+    val content = frame.hcursor.downField("content").as[String].getOrElse("")
+    if sessionId.isEmpty then
+      wsSend(
+        Json.obj("type" -> "irResult".asJson, "status" -> "invalid".asJson, "error" -> "sessionId is required".asJson)
+      )
+    else
+      ctx.admitWorkOrRefuse(wsSend)(
+        IO.uncancelable(_ =>
+          sessionStore
+            .appendUiMessages(sessionId, List(UiMessage.User(content, Nil, timestamp = System.currentTimeMillis())))
+            .handleErrorWith(e => ctx.logger.warn(s"ir sugar: failed to record user bubble: ${e.getMessage}")) *>
+            runSugar(ctx, sessionId, content, wsSend)
+        )
+      )
+  end handleHumanSugar
+
+  private def runSugar(ctx: WsDispatchCtx, sessionId: String, content: String, wsSend: Json => IO[Unit]): IO[Unit] =
+    import ctx.*
+    val requestId = java.util.UUID.randomUUID().toString
+    def bubble(result: PlanResult): IO[Unit] =
+      sessionStore
+        .appendUiMessages(sessionId, List(sugarSystem(content, result)))
+        .handleErrorWith(e => ctx.logger.warn(s"ir sugar: failed to record system bubble: ${e.getMessage}"))
+    def sendResult(result: PlanResult): IO[Unit] =
+      wsSend(
+        Json.obj(
+          "type" -> "irResult".asJson,
+          "requestId" -> requestId.asJson,
+          "response" -> result.toJson
+        )
+      ) *> bubble(result)
+    ArgvSugar.lower(content, IrGateway.lookup) match
+      case Left(err) =>
+        sendResult(IrGateway.instance.invalidResult(requestId, err))
+      case Right(call) =>
+        for
+          rootStr <- resolveExplorerBaseRoot(sessionId, None)
+          safety <- sharedResources.effectiveSafetyMode
+          result <- IrGateway.instance.submit(
+            // 服务端构信封：tenant=human/console 常量（gateway 只有 token 级 auth，无逐用户
+            // 身份——openQuestions 待作者裁定）、ingress=human、requestId=UUID
+            IrRequest(call, Tenant.Human("console"), Ingress.Human, sessionId, requestId),
+            VfsRoot(os.Path(rootStr, os.pwd)),
+            irSafety(safety)
+          )
+          _ <- sendResult(result)
+        yield ()
+    end match
+  end runSugar
+
+  /** `ir.sugar` 系统气泡：完整可读摘要（命令名/status/exit/error.code；先例 slash.clearDone）。 */
+  private def sugarSystem(content: String, result: PlanResult): UiMessage.System =
+    val cmd = content.trim.takeWhile(c => c != ' ' && c != '\t' && c != '\n' && c != '\r')
+    val exit = result.exit.map(_.toString).getOrElse("null")
+    val err = result.error.map(e => s", ${e.code}").getOrElse("")
+    UiMessage.System(s"$cmd → ${Status.wire(result.status)} (exit=$exit$err)", i18nKey = Some("ir.sugar"))
 
   /**
    * 帧形态：`{"type":"ir","sessionId":"…","request":{<信封 §0>}}`。

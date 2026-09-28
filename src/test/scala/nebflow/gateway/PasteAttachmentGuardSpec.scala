@@ -46,15 +46,14 @@ class PasteAttachmentGuardSpec extends FunSuite:
     )
     // Both search entry points must be gated by the flag.
     // 2026-09-24:钉死文本更新为 scalafmt 重排后的两行形态(判据语义不变)。
+    // 2026-09-29:两行判据改空白容忍正则——P1-1 糖分流把 case _ 腿整体下移一层,
+    // 行间缩进随结构走(scalafmt 后续重排同样会动它);「条件行 + 下一搜索入口」的
+    // 邻接关系才是判据语义,缩进宽度不是。
     val idxFlag = src.indexOf("val isFrontendBlob")
-    val idxWalk =
-      src.indexOf(
-        "if !isFrontendBlob && hash.nonEmpty && fileSize > 0 then\n                              findLocalFile"
-      )
-    val idxSpot =
-      src.indexOf(
-        "case None if !isFrontendBlob && hash.nonEmpty && fileSize > 0 =>\n                              spotlightSearch"
-      )
+    val walkRe  = """if !isFrontendBlob && hash\.nonEmpty && fileSize > 0 then\s+findLocalFile""".r
+    val spotRe  = """case None if !isFrontendBlob && hash\.nonEmpty && fileSize > 0 =>\s+spotlightSearch""".r
+    val idxWalk = walkRe.findFirstMatchIn(src).map(_.start).getOrElse(-1)
+    val idxSpot = spotRe.findFirstMatchIn(src).map(_.start).getOrElse(-1)
     assert(idxWalk > idxFlag, "findLocalFile no longer gated by isFrontendBlob")
     assert(idxSpot > idxFlag, "spotlightSearch no longer gated by isFrontendBlob")
   }
