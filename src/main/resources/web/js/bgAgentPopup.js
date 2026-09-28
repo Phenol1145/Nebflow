@@ -195,6 +195,8 @@ export function openStepPopup(nodeSessionId, agentName, taskDescription) {
   updateFooterStatus(entry);
 
   popupOverlay.addEventListener('click', (e) => {
+    // @ts-expect-error —— checkJs 收敛批（2026-09-27，纯注释插入零行为变更）：e.target
+    // 静态类型 EventTarget 无 id；click 目标实为 Element，=== 判定运行时自完备。
     if (e.target === popupOverlay || e.target.id === 'bgagent-close') closeStepPopup();
   });
 
@@ -398,7 +400,9 @@ setBgAgentStepInterceptor(interceptBgAgentStep);
  *  before it (SessionStore.getHistoryPage), exactly like the primary window.
  *  Returns false when no frame was sent: nothing older exists, a request is
  *  already in flight, or a page/row ceiling has been reached.
- *  @param opts.budgeted  also apply the wall-clock budget (automatic run). */
+ *  @param {object} opts  options bag（checkJs 收敛批 2026-09-27：限定名需要此前置
+ *                   父对象行，否则 TS8032；纯 JSDoc 注释，零行为）。
+ *  @param {boolean} [opts.budgeted]  also apply the wall-clock budget (automatic run). */
 function requestOlderPage(entry, opts = {}) {
   const pag = entry.view.pagination;
   const bf = entry.backfill;
@@ -481,6 +485,8 @@ export function handleBgAgentHistory(msg) {
   const fragment = document.createDocumentFragment();
   while (stage.firstChild) {
     const child = stage.firstChild;
+    // @ts-expect-error —— checkJs 收敛批（2026-09-27，纯注释插入零行为变更）：firstChild
+    // 静态类型 ChildNode 无 classList；text 节点由行内 child.classList 守卫动态判空。
     if (child.classList && child.classList.contains('row')) child.classList.add('prepend-skip-anim');
     fragment.appendChild(child);
   }

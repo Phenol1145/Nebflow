@@ -53,6 +53,8 @@ import {
   initModals
 } from './modal.js';
 import { send, handleSlash, addFileAttachment, initInput, initGlobalFileDrop, injectUserMessage, enterAskMode, cancelAskMode, registerSkillCommands, drainMessageQueue, restoreQueue, takeRealUserTurn } from './input.js';import { saveMsg, loadMsgs, restoreFromStorage, restoreFromBackendHistory, migrateLegacyIfNeeded, emergencyCacheCleanup, findLastRealMessage, saveAskMsgDedup } from './persistence.js';
+// mention-tokens 批 2：@flow: 提及面板名册喂数（独立单值 import，不并入上行既有长行）。
+import { setMentionFlowEntries } from './input.js';
 import { initMicOrb } from './micOrb.js';
 // taskList.js 引用已随旧任务区退役移除（2026-09-05 10:54 裁定）：面板渲染
 // 由 taskList.js 自包含节点订阅驱动，session 切换重渲走 sidebar.js。
@@ -2937,6 +2939,14 @@ onMessage('askError', (msg, view) => {
 onMessage('skillList', (msg, view) => {
   state.skills = msg.skills || [];
   registerSkillCommands(state.skills);
+});
+
+// --- Team/flow roster (mention-tokens 批 2) ---
+// teamList 帧（ws.js 连接即请求 {type:'getTeams'}）此前全仓无订阅 —— 首个消费者：
+// 把 flows 条目喂给 input.js 的 @flow: 提及补全面板（仿上方 skillList →
+// registerSkillCommands 惯例；teams 条目暂无面板触发源，原样不消费）。
+onMessage('teamList', (msg, view) => {
+  setMentionFlowEntries(msg.flows || []);
 });
 
 onMessage('skillError', (msg, view) => {

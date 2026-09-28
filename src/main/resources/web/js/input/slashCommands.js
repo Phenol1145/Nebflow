@@ -28,7 +28,10 @@ const SLASH_ALLOWED = new Set(['/clear', '/compact']);
 /** May `cmd` be listed/dispatched? Whichever is in the whitelist · always;
  *  everything else only while the master gate is open. */
 const slashAllowed = (cmd) => SLASH_ALLOWED.has(cmd) || SLASH_ENABLED();
-const slashCommands = {
+/* 导出（2026-09-28，mention-tokens 批 2 × FE 拆分合流）：提及补全面板按 `_skill`
+   条目建 `$技能` 名册，与本表共用同一对象引用（`registerSkillCommands` 的动态注册
+   照常可见）。此前该表与面板同处 input.js，拆分后跨模块，故显式导出。 */
+export const slashCommands = {
   '/ask': {
     desc: () => t('slash.ask'),
     run: () => {

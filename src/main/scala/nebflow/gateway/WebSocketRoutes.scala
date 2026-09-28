@@ -1548,16 +1548,35 @@ class WebSocketRoutes(
                             // 曾以直通覆盖的「刷新后 busy 标志丢失」窗口（#43-domain）
                             // 随之回到功能前口径：pending 卡保持 pending、须点卡作答。
                             // ref/附件携带帧本就只走本通道，形态逐字节不变。
-                            ensureAgent(msgSessionId)(ref =>
-                              ref ! AgentCommand
-                                .UserInput(
-                                  content,
-                                  None,
-                                  clientMessageId,
-                                  Some(blocksList).filter(_.nonEmpty),
-                                  chatWidth
+                            // mention-tokens(feat/mention-tokens 2026-09-27)：@实体/$技能
+                            // 提及解析为指针行追加——UiMessage 落盘保留原文（记录面），
+                            // agent 收到增强文本（投递面），与 refs 注入同构。
+                            InputMentions
+                              .resolve(
+                                content,
+                                InputMentions.defaultLookups(
+                                  msgSessionId,
+                                  resolveExplorerBaseRoot(msgSessionId, None),
+                                  sessionStore
                                 )
-                            )
+                              )
+                              .flatMap { case (contentForAgent, unresolvedMentions) =>
+                                (if unresolvedMentions.nonEmpty then
+                                   logger.debug(
+                                     s"[mentions] unresolved: ${unresolvedMentions.map(_.token).mkString(", ")}"
+                                   )
+                                 else IO.unit) *>
+                                  ensureAgent(msgSessionId)(ref =>
+                                    ref ! AgentCommand
+                                      .UserInput(
+                                        contentForAgent,
+                                        None,
+                                        clientMessageId,
+                                        Some(blocksList).filter(_.nonEmpty),
+                                        chatWidth
+                                      )
+                                  )
+                              }
                           }
                         }
                     }
@@ -1714,16 +1733,26 @@ class WebSocketRoutes(
    * caller can silently inherit the wrong origin.
    */
   private def dispatchUserText(sessionId: String, content: String, source: String, fromUser: Boolean): IO[Unit] =
-    logger.info(s"User text ($source) for session $sessionId (${content.length} chars)") *>
-      sessionStore.appendUiMessages(
-        sessionId,
-        List(UiMessage.User(content, Nil, timestamp = System.currentTimeMillis()))
-      ) *>
-      // Hard-recovery P4: if the target turn is wedged (Processing + idle >
-      // SessionKickIdleSec), break it BEFORE queueing — the queued message
-      // injects at the turn boundary the kick creates (user intent first).
-      maybeSessionKick(sessionId, s"userMessage:$source") *>
-      ensureAgent(sessionId)(ref => ref ! AgentCommand.ImmediateInput(content, fromUser = fromUser))
+    // mention-tokens(feat/mention-tokens 2026-09-27)：@实体/$技能 提及解析——
+    // UiMessage 落盘保留原文（记录面），agent 收到尾部追加 [提及解析] 指针块的
+    // 增强文本（投递面），与 typeless 腿 refs 注入同构；CLI 免费获得同构行为。
+    InputMentions
+      .resolve(content, InputMentions.defaultLookups(sessionId, resolveExplorerBaseRoot(sessionId, None), sessionStore))
+      .flatMap { case (contentForAgent, unresolved) =>
+        (if unresolved.nonEmpty then
+           logger.debug(s"[mentions] unresolved ($source): ${unresolved.map(_.token).mkString(", ")}")
+         else IO.unit) *>
+          logger.info(s"User text ($source) for session $sessionId (${content.length} chars)") *>
+          sessionStore.appendUiMessages(
+            sessionId,
+            List(UiMessage.User(content, Nil, timestamp = System.currentTimeMillis()))
+          ) *>
+          // Hard-recovery P4: if the target turn is wedged (Processing + idle >
+          // SessionKickIdleSec), break it BEFORE queueing — the queued message
+          // injects at the turn boundary the kick creates (user intent first).
+          maybeSessionKick(sessionId, s"userMessage:$source") *>
+          ensureAgent(sessionId)(ref => ref ! AgentCommand.ImmediateInput(contentForAgent, fromUser = fromUser))
+      }
 
   /**
    * 冻结「跳过本次」唯一入口（2026-08-25 22:28 裁定）：前端冻结按钮发
