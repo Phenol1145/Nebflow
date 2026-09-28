@@ -520,26 +520,37 @@ function deviceUpdateEntry(d) {
  *  按 DOM 现读扫描（不整面板重渲染）：零重排、零列表闪烁。 */
 function syncDeviceUpdateUI() {
   document.querySelectorAll('[data-device-update-state]').forEach((stateEl) => {
+    // @ts-expect-error —— checkJs 收敛批（2026-09-27，纯注释插入零行为变更）：
+    // querySelectorAll 泛型收窄在 .js 不可写；目标元素由 :509 el('span') 创建，
+    // HTMLElement.dataset 运行时恒在。
     const dn = stateEl.dataset.deviceUpdateState || '';
     const row = stateEl.closest('.neblink-peer');
     const btn = row ? row.querySelector('[data-device-update-btn]') : null;
     const st = getDeviceUpdateState(dn);
     if (!st) {
       stateEl.textContent = '';
+      // 以下 5 处同因（checkJs 收敛批 2026-09-27，纯注释插入零行为变更）：querySelector
+      // 静态返回 Element；目标为 :510 el('button') 创建的 HTMLButtonElement，
+      // disabled 运行时恒在。
+      // @ts-expect-error
       if (btn) btn.disabled = false;
       return;
     }
     if (st.status === 'updating') {
       stateEl.textContent = t('neblink.updating');
+      // @ts-expect-error
       if (btn) btn.disabled = true;
     } else if (st.status === 'done') {
       stateEl.textContent = t('neblink.restarting');
+      // @ts-expect-error
       if (btn) btn.disabled = true;
     } else if (st.status === 'timeout') {
       stateEl.textContent = t('neblink.updateTimeout');
+      // @ts-expect-error
       if (btn) btn.disabled = false;
     } else { // error —— 文案 = 后端既有错误分支原文（不新增客户端离线机制）
       stateEl.textContent = st.message || '';
+      // @ts-expect-error
       if (btn) btn.disabled = false;
     }
   });

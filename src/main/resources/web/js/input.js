@@ -20,6 +20,9 @@ import { notifyVoiceState } from './micOrb.js';
 import { showToast } from './modal.js';
 // ⑤ 中文输入收归（作者裁定 2026-09-12）：组字判定唯一来源 = imeGuard.js。
 import { bindImeGuard, isImeComposing } from './imeGuard.js';
+// mention-tokens 批 2：@project: 面板数据源复用 nodeData 既有 fetchProjects（零新管道；
+// nodeData → flowHelpers → branding，无环）。
+import { fetchProjects } from './nodeData.js';
 
 // ---------- 真人消息 turn 标志（2026-09-16 msunread-r2；作者裁定 ①）----------
 // 「本机派发了一条真人消息 = 本 turn 的起点」的 per-session turn 级标志。
@@ -170,12 +173,39 @@ export function registerSkillCommands(skills) {
 // ---------- Slash Command Handler ----------
 export function handleSlash(text) {
   const cmd = text.trim().split(/\s/)[0]; // 解析**先于**判定（D1-B：白名单按命令名判）
+  // /skill:name [input] —— 内联执行技能（2026-09-27 语法统一：$name 退役，/ 执行 · @ 引用）。
+  // 与 /clear /compact 同列的内置固定形式，不受封存白名单管辖（作者指令放行）。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    const rest = text.trim().slice(cmd.length).trim();
+    if (name) dispatchSkillInline(name, rest);
+    else renderSystemBubble(t('slash.skillUsage'));
+    return true;
+  }
   if (!slashAllowed(cmd)) return false; // SEALED: '/' is plain text（白名单两条除外）
   if (slashCommands[cmd] && slashCommands[cmd].run) {
     slashCommands[cmd].run(text);
     return true;
   }
   return false;
+}
+
+/** `/skill:name [input]` 内联执行（2026-09-27）——镜像 skill mode 发送路径（busy 入队）。 */
+function dispatchSkillInline(skillName, skillInput) {
+  const v = activeView;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  const text = skillInput || '';
+  const isBusy = state.busySessionIds.has(v.sessionId) || state.compactingSessionIds.has(v.sessionId);
+  if (isBusy) {
+    queueMessage(v, text, [], skillName);
+    return;
+  }
+  v.isSending = true;
+  if (v.sessionId) { state.turnExpecting[v.sessionId] = true; markRealUserTurn(v.sessionId); }
+  sendWs({ type: 'skill', skillName, input: text, sessionId: v.sessionId });
+  renderSkillBubble(skillName, text);
+  saveMsg({ type: 'user', text, attachments: [] });
+  setTimeout(() => { v.isSending = false; }, 300);
 }
 
 // ---------- Slash Autocomplete ----------
@@ -187,9 +217,23 @@ function updateSlashDropdown() {
     return;
   }
   const query = text.slice(1).toLowerCase();
-  activeView.slashMatches = Object.entries(slashCommands)
-    .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
-    .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+  // /skill: 前缀形态（2026-09-27 语法统一）：列出技能名册，拾取即内联执行
+  if (query.startsWith('skill:')) {
+    const sk = query.slice('skill:'.length);
+    activeView.slashMatches = Object.values(slashCommands)
+      .filter(info => info._skill && info._skillName)
+      .filter(info => sk === '' || String(info._skillName).toLowerCase().startsWith(sk))
+      .slice(0, 50)
+      .map(info => ({ cmd: '/skill:' + info._skillName, desc: typeof info.desc === 'function' ? info.desc() : (info.desc || ''), whenToUse: info.argumentHint || '', isSkill: true, source: info._source || '', skillName: info._skillName }));
+  } else {
+    activeView.slashMatches = Object.entries(slashCommands)
+      .filter(([cmd]) => slashAllowed(cmd) && cmd.slice(1).toLowerCase().startsWith(query))
+      .map(([cmd, info]) => ({ cmd, desc: typeof info.desc === 'function' ? info.desc() : info.desc, whenToUse: info.whenToUse || '', isSkill: !!info._skill, source: info._source || '', skillName: info._skillName || '' }));
+    // 发现式：键入 /sk… 时提示 /skill: 形态（空查询不提示——'/' 保持既有两条命令的列表）
+    if (query.length > 0 && 'skill:'.startsWith(query)) {
+      activeView.slashMatches.unshift({ cmd: '/skill:', desc: t('slash.skillUsage'), whenToUse: '', isSkill: true, source: '', skillName: '' });
+    }
+  }
   if (activeView.slashMatches.length === 0) {
     closeSlashDropdown();
     return;
@@ -262,6 +306,13 @@ function pickSlashCommand(index) {
   activeView.dom.input.style.height = 'auto';
   closeSlashDropdown();
   activeView.dom.input.focus();
+  // /skill: 条目（2026-09-27）：有名字 → 内联执行；仅形态提示 → 回填输入框续输参数。
+  if (cmd.startsWith('/skill:')) {
+    const name = cmd.slice('/skill:'.length);
+    if (name) dispatchSkillInline(name, '');
+    else { activeView.dom.input.value = '/skill:'; updateSlashDropdown(); }
+    return;
+  }
   if (slashCommands[cmd] && slashCommands[cmd].run) slashCommands[cmd].run();
 }
 
@@ -272,6 +323,302 @@ function handleDeleteSkill(skillName) {
     sendWs({ type: 'deleteSkill', name: skillName });
     closeSlashDropdown();
   });
+}
+
+// ---------- Mention Autocomplete (mention-tokens 批 2, 2026-09-27) ----------
+// 输入框 CLI 化的前端半边：键入 @ 时弹出提及补全面板，插入**后端可解析**的
+// token（后端权威解析 = InputMentions.scala；指针注入、不落模型），前端不预
+// 校验存在性（后端对未解析 token fail-open）。分词边界镜像后端：触发符前一字符不是
+// ASCII 词字符（挡邮箱 `user@x.com`，放行 CJK 紧邻 `看@project:x`），`\@` 与 `@@`
+// 转义不触发（2026-09-27 语法统一：$ 退役、技能并入 @skill:，@@// 为转义），
+// 空白与 CJK 句读终结符截断 token。
+//
+// 与斜杠面板互斥（共享 #slash-dropdown 壳）：文本以 / 开头 = 斜杠逻辑域（既有
+// updateSlashDropdown 管，本块零介入），其余文本归提及面板。两面板永不同时开：
+//   · input 事件上斜杠监听器（initInput 内）先注册先执行 —— 它对非 / 文本调
+//     closeSlashDropdown 收壳，refreshMention 随后重算提及上下文再开壳；
+//   · keydown 里提及导航块插在斜杠导航块**之前**，靠「提及面板在壳上开启」这一
+//     模式位接管 ↑↓/Enter/Escape —— 能进提及块 ⇒ 文本非 / 开头 ⇒ 斜杠面板必已被
+//     先行监听器关掉，斜杠块不可达。
+// 触发源四种：
+//   `@skill:`     → slashCommands 表中 _skill 条目（_skillName/desc/argumentHint，
+//                   零新管道；后端技能名精确匹配 ⇒ 前端过滤大小写敏感；执行侧 /skill: 见 handleSlash）；
+//   `@project:`   → GET /api/projects（nodeData.fetchProjects，30s 内存缓存，失败按
+//                   空名册缓存同窗防逐键重拉）；
+//   `@flow:`      → teamList 帧（ws.js 连接即请求 {type:'getTeams'}，本批前全仓无
+//                   订阅）→ main.js onMessage('teamList') → setMentionFlowEntries 喂数
+//                   （仿 registerSkillCommands 惯例）；
+//   `@路径`       → **降级语法提示**（@/ @./ @~/ 三形态 + 说明）：wsBrowse 响应帧
+//                   （wsBrowseList{path,home,entries}）无 requestId 关联字段，与本文件
+//                   之外 workspacePicker 的单飞动态监听并行时会互相错收对方响应帧
+//                   （onMessage 注册表是多槽，但帧本身不可归因），且逐键 WS 往返代价
+//                   高 —— 故文件补全只展示可解析形态提示（见 summary 降级决策）。
+// 另：裸 `@` 给前缀菜单（@project: / @flow: / 文件三形态）供发现式补全；`@session:`
+// 后端可解析但本批无面板触发源（会话名册无既有喂数管道），手动键入仍由后端解析。
+// 插入契约：实体项（技能/项目/流程）= 完整 token + 一个尾随空格，光标落空格后
+// （尾随空格保证 CJK 句读截断契约下 token 干净终结）；前缀/形态项 = 仅插入精确前缀、
+// **无**尾随空格（名称/路径由用户续写 —— 空格会切断 token 使其不可解析）。
+// 状态归模块级（斜杠面板状态挂 activeView；提及面板只服务主输入框 —— initInput 仅对
+// primary 调用，popup 视图 dom.slashDropdown 为 null）。
+
+const MENTION_MAX_ITEMS = 50;         // 面板条目上限（项目/流程名册可能很大）
+const MENTION_PROJECT_TTL_MS = 30000; // 项目列表内存缓存窗
+// CJK 句读终结符 —— 镜像 InputMentions.TokenTerminators（ASCII 空白在向左扫描时单独判定）。
+const MENTION_TERMINATORS = '。，、；：！？）】」》…”—';
+
+const mentionState = {
+  open: false,
+  kind: '',        // 'skill' | 'project' | 'flow' | 'menu' | 'file'
+  tokenStart: 0,   // 触发符（@/$）在 input.value 中的下标
+  tokenEnd: 0,     // 触发时的光标位（选中替换区间 = [tokenStart, tokenEnd)）
+  valueLen: 0,     // 触发时的 input.value.length（pick 前漂移检测）
+  query: '',       // 触发符后、光标前的已输文本
+  items: [],
+  selectedIndex: 0
+};
+
+// @flow: 名册（main.js teamList 订阅喂数；仿 registerSkillCommands 惯例的导出 setter）。
+let mentionFlowEntries = [];
+/** main.js 的 onMessage('teamList') 把 flows 条目喂进来（[ {name, description} ]）。 */
+export function setMentionFlowEntries(entries) {
+  mentionFlowEntries = Array.isArray(entries) ? entries : [];
+}
+
+// @project: 名册（懒拉取 + TTL 缓存）。
+let mentionProjects = { list: null, at: 0 };
+let mentionProjectFetch = null;
+function ensureMentionProjects() {
+  if (mentionProjects.list && Date.now() - mentionProjects.at < MENTION_PROJECT_TTL_MS) {
+    return Promise.resolve(mentionProjects.list);
+  }
+  if (!mentionProjectFetch) {
+    mentionProjectFetch = fetchProjects()
+      .then(list => { mentionProjects = { list: Array.isArray(list) ? list : [], at: Date.now() }; })
+      .catch(() => { mentionProjects = { list: mentionProjects.list || [], at: Date.now() }; })
+      .finally(() => { mentionProjectFetch = null; });
+  }
+  return mentionProjectFetch.then(() => mentionProjects.list || []);
+}
+
+/** 触发符前一字符是否 ASCII 词字符（镜像 InputMentions.isAsciiWordChar）。 */
+function isMentionWordChar(c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_';
+}
+
+/** 纯前端分词：光标左侧向左扫描最近的提及触发符并分类。返回 null = 无提及上下文。
+ *  （JSDoc 注释体内不写提及符号字面 —— tsc 会把 `@` 当 JSDoc 标签起始解析，
+ *  `@/` 这样的序列触发 TS1003 Identifier expected，见 check-js-types 门禁。） */
+function findMentionContext(text, caret) {
+  if (text.startsWith('/')) return null; // 斜杠域（与斜杠面板互斥的硬边界）
+  let i = caret - 1;
+  while (i >= 0) {
+    const ch = text[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') return null;
+    if (MENTION_TERMINATORS.indexOf(ch) >= 0) return null; // CJK 句读截断（镜像后端）
+    if (ch === '@') break;
+    i--;
+  }
+  if (i < 0) return null;
+  if (i > 0) {
+    const prev = text[i - 1];
+    if (prev === '\\') return null;           // \@ 转义不触发（镜像后端）
+    if (prev === '@') return null;            // @@ 转义不触发（2026-09-27，镜像后端）
+    if (isMentionWordChar(prev)) return null; // 词中触发拦下（邮箱 user@x.com）
+  }
+  const rest = text.slice(i + 1, caret);
+  // 类型前缀必须精确（镜像 classify 的大小写敏感 startsWith）
+  if (rest.startsWith('project:')) return { kind: 'project', tokenStart: i, query: rest.slice('project:'.length) };
+  if (rest.startsWith('flow:')) return { kind: 'flow', tokenStart: i, query: rest.slice('flow:'.length) };
+  if (rest.startsWith('skill:')) return { kind: 'skill', tokenStart: i, query: rest.slice('skill:'.length) };
+  // 裸 @ / 类型前缀的部分输入 → 前缀菜单（发现式；`@词` 等裸形态不触发，零打扰）
+  if (rest === '' || 'project:'.startsWith(rest) || 'flow:'.startsWith(rest) || 'skill:'.startsWith(rest)) {
+    return { kind: 'menu', tokenStart: i, query: rest };
+  }
+  // 路径形态：@/ @./ @~/ 或含 / 的相对路径（镜像 classify 的 contains('/') || startsWith('@~')）
+  if (rest.startsWith('/') || rest.startsWith('.') || rest.startsWith('~') || rest.indexOf('/') >= 0) {
+    return { kind: 'file', tokenStart: i, query: rest };
+  }
+  return null;
+}
+
+/** 按上下文构建面板条目。item.insert = 选中后替换 [tokenStart, tokenEnd) 的文本。 */
+function buildMentionItems(ctx) {
+  if (ctx.kind === 'skill') {
+    return Object.values(slashCommands)
+      .filter(info => info._skill && info._skillName)
+      .filter(info => ctx.query === '' || info._skillName.startsWith(ctx.query))
+      .slice(0, MENTION_MAX_ITEMS)
+      .map(info => ({
+        label: '@skill:' + info._skillName,
+        detail: typeof info.desc === 'function' ? info.desc() : (info.desc || ''),
+        hint: info.argumentHint || '',
+        badge: t('slash.mentionSkill'),
+        insert: '@skill:' + info._skillName,
+        space: true
+      }));
+  }
+  if (ctx.kind === 'project') {
+    const q = ctx.query.toLowerCase(); // 后端 equalsIgnoreCase ⇒ 大小写不敏感过滤
+    return (mentionProjects.list || [])
+      .filter(p => p && p.name && (q === '' || String(p.name).toLowerCase().startsWith(q)))
+      .slice(0, MENTION_MAX_ITEMS)
+      .map(p => ({
+        label: String(p.name),
+        detail: p.description || p.workspace || '',
+        hint: '',
+        badge: t('slash.mentionProject'),
+        insert: '@project:' + p.name,
+        space: true
+      }));
+  }
+  if (ctx.kind === 'flow') {
+    const q = ctx.query.toLowerCase(); // 后端 equalsIgnoreCase ⇒ 大小写不敏感过滤
+    return mentionFlowEntries
+      .filter(f => f && f.name && (q === '' || String(f.name).toLowerCase().startsWith(q)))
+      .slice(0, MENTION_MAX_ITEMS)
+      .map(f => ({
+        label: String(f.name),
+        detail: f.description || '',
+        hint: '',
+        badge: t('slash.mentionFlow'),
+        insert: '@flow:' + f.name,
+        space: true
+      }));
+  }
+  // menu（裸 @ 前缀菜单）+ file（路径形态语法提示，降级：不联网列目录）
+  const items = [];
+  if (ctx.kind === 'menu') {
+    if ('project:'.startsWith(ctx.query)) {
+      items.push({ label: '@project:', detail: t('slash.mentionProjectHint'), hint: '', badge: t('slash.mentionProject'), insert: '@project:', space: false });
+    }
+    if ('flow:'.startsWith(ctx.query)) {
+      items.push({ label: '@flow:', detail: t('slash.mentionFlowHint'), hint: '', badge: t('slash.mentionFlow'), insert: '@flow:', space: false });
+    }
+    if ('skill:'.startsWith(ctx.query)) {
+      items.push({ label: '@skill:', detail: t('slash.mentionSkillHint'), hint: '', badge: t('slash.mentionSkill'), insert: '@skill:', space: false });
+    }
+  }
+  // 文件形态：file 态恒显示；menu 态仅在 rest 为空或已是 ./ ~/ 的前缀时出现。
+  // 选中 = 用该形态**替换**整个已输 token（无尾随空格，光标续写路径）。
+  if (ctx.kind === 'file' || (ctx.kind === 'menu' && (ctx.query === '' || './'.startsWith(ctx.query) || '~/'.startsWith(ctx.query)))) {
+    items.push({ label: '@/', detail: t('slash.mentionFileRoot'), hint: '', badge: t('slash.mentionFile'), insert: '@/', space: false });
+    items.push({ label: '@./', detail: t('slash.mentionFileCwd'), hint: '', badge: t('slash.mentionFile'), insert: '@./', space: false });
+    items.push({ label: '@~/', detail: t('slash.mentionFileHome'), hint: '', badge: t('slash.mentionFile'), insert: '@~/', space: false });
+  }
+  return items;
+}
+
+function closeMentionDropdown(view) {
+  if (!mentionState.open) return; // 'on' 类可能正被斜杠面板持有 —— 只收自己的
+  mentionState.open = false;
+  mentionState.items = [];
+  mentionState.selectedIndex = 0;
+  const dd = view && view.dom && view.dom.slashDropdown;
+  if (dd) dd.classList.remove('on');
+}
+
+function setMentionHighlight(view, index) {
+  const n = mentionState.items.length;
+  if (n === 0) return;
+  mentionState.selectedIndex = ((index % n) + n) % n;
+  const dd = view.dom.slashDropdown;
+  if (!dd) return;
+  const items = dd.querySelectorAll('.slash-item');
+  items.forEach((el, i) => { el.classList.toggle('active', i === mentionState.selectedIndex); });
+  // 可视区滚动 —— 逐值镜像 setSlashHighlight 的算法，但作用于传入 view（WS 帧可能在
+  // 悬停/按键间隙切走 activeView，不能像斜杠版那样读全局 activeView）。
+  const active = items[mentionState.selectedIndex];
+  if (!active) return;
+  let relTop = 0;
+  let el = active;
+  while (el && el !== dd) {
+    relTop += el.offsetTop;
+    el = el.offsetParent;
+  }
+  const relBottom = relTop + active.offsetHeight;
+  if (relTop < dd.scrollTop) {
+    dd.scrollTop = relTop;
+  } else if (relBottom > dd.scrollTop + dd.clientHeight) {
+    dd.scrollTop = relBottom - dd.clientHeight;
+  }
+}
+
+function renderMentionItems(view) {
+  const dd = view.dom.slashDropdown;
+  dd.innerHTML = '';
+  // 面板头（非交互行，不给 .slash-item 类 ⇒ 不进高亮/选择序列）
+  const head = document.createElement('div');
+  head.style.cssText = 'padding:7px 14px 3px;font-size:11px;color:var(--color-text-muted);pointer-events:none;';
+  head.textContent = t('slash.mentionTitle');
+  dd.appendChild(head);
+  mentionState.items.forEach((item, i) => {
+    const div = document.createElement('div');
+    div.className = 'slash-item' + (i === mentionState.selectedIndex ? ' active' : '');
+    const badge = '<span class="slash-badge skill">' + escapeHtml(item.badge) + '</span>';
+    const hintHtml = item.hint ? '<span class="slash-when">' + escapeHtml(item.hint) + '</span>' : '';
+    div.innerHTML = '<div style="display:flex;align-items:center"><span class="slash-cmd">' + escapeHtml(item.label) + '</span>' + badge + '</div><span class="slash-desc">' + escapeHtml(item.detail) + '</span>' + hintHtml;
+    // mousedown + preventDefault（而非斜杠面板的 onclick）：防止点选时输入框先失焦，
+    // 否则本块的 blur 即关会把面板在 click 之前收掉。
+    div.onmousedown = (e) => { e.preventDefault(); pickMention(view, i); };
+    div.onmouseenter = () => { setMentionHighlight(view, i); };
+    dd.appendChild(div);
+  });
+  dd.classList.add('on');
+  mentionState.open = true;
+}
+
+function pickMention(view, index) {
+  if (index < 0 || index >= mentionState.items.length) return;
+  const input = view.dom.input;
+  // 光标/文本自触发以来漂移（Home/End 等移动光标不触发 input 事件）⇒ 放弃本次选择、
+  // 按当前光标位重算上下文（无上下文则顺势收面板）。
+  const caretNow = typeof input.selectionEnd === 'number' ? input.selectionEnd : input.value.length;
+  if (caretNow !== mentionState.tokenEnd || input.value.length !== mentionState.valueLen) {
+    refreshMention(view);
+    return;
+  }
+  const item = mentionState.items[index];
+  const insertText = item.insert + (item.space ? ' ' : '');
+  const before = input.value.slice(0, mentionState.tokenStart);
+  const after = input.value.slice(mentionState.tokenEnd);
+  input.value = before + insertText + after;
+  const caret = mentionState.tokenStart + insertText.length;
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+  input.setSelectionRange(caret, caret);
+  closeMentionDropdown(view);
+  // 程序化改值不触发 input 事件 —— 纯引用帧闸（判据读 input.value）在此手动同步。
+  syncRefOnlyGate(view);
+  input.focus();
+  // 前缀/形态项落点仍是提及上下文 ⇒ 按当前输入态重算、面板无缝续展
+  // （@project: → 项目列表）；实体项带尾随空格 ⇒ 重算后无上下文、保持关闭。
+  refreshMention(view);
+}
+
+function refreshMention(view) {
+  if (!view || !view.dom || !view.dom.input || !view.dom.slashDropdown) return;
+  const input = view.dom.input;
+  const text = input.value;
+  if (text.startsWith('/')) { closeMentionDropdown(view); return; } // 斜杠域
+  const caret = typeof input.selectionEnd === 'number' ? input.selectionEnd : text.length;
+  const ctx = findMentionContext(text, caret);
+  if (!ctx) { closeMentionDropdown(view); return; }
+  mentionState.tokenStart = ctx.tokenStart;
+  mentionState.tokenEnd = caret;
+  mentionState.valueLen = text.length;
+  mentionState.query = ctx.query;
+  mentionState.kind = ctx.kind;
+  if (ctx.kind === 'project' && !mentionProjects.list) {
+    // 首次触发：拉到项目列表后按**当前**输入态重算（本轮不开空面板，防闪烁）。
+    ensureMentionProjects().then(() => { refreshMention(view); });
+    closeMentionDropdown(view);
+    return;
+  }
+  const items = buildMentionItems(ctx);
+  if (items.length === 0) { closeMentionDropdown(view); return; }
+  mentionState.items = items;
+  mentionState.selectedIndex = 0;
+  renderMentionItems(view);
 }
 
 // ---------- Ask Mode ----------
@@ -1442,6 +1789,32 @@ export function initInput(view) {
         return;
       }
     }
+    // ── Mention panel navigation (mention-tokens 批 2) ──────────────────
+    // 模式位：提及面板在共享 #slash-dropdown 壳上开启（mentionState.open 且 'on' 类
+    // 仍在 —— 文档级 outside-click 只摘类不清模块态，故双查）时，先于下方斜杠块接管
+    // 四键。能进到这里 ⇒ 文本非 / 开头 ⇒ 斜杠面板必已关闭，两块互斥。
+    if (mentionState.open && mentionState.items.length > 0 && slashDropdown.classList.contains('on')) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionHighlight(view, mentionState.selectedIndex + 1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionHighlight(view, mentionState.selectedIndex - 1);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        pickMention(view, mentionState.selectedIndex);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMentionDropdown(view);
+        return;
+      }
+    }
     if (slashDropdown.classList.contains('on')) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -1733,6 +2106,18 @@ export function initInput(view) {
 
   // Slash dropdown input listener
   input.addEventListener('input', () => { setActiveView(view); updateSlashDropdown(); });
+
+  // Mention dropdown listeners (mention-tokens 批 2) —— 斜杠监听器的**追加**兄弟，
+  // 注册序即执行序：每个 input 事件先跑上面的斜杠逻辑（它拥有 / 开头文本并收共享壳），
+  // 再由 refreshMention 对其余文本重算提及上下文，两面板因此天然互斥。
+  input.addEventListener('input', () => { setActiveView(view); refreshMention(view); });
+  // 失焦即关（点面板项的路径除外：条目用 mousedown+preventDefault，输入框根本不失焦；
+  // setTimeout 让位给真实 click 落点后再判 activeElement）。
+  input.addEventListener('blur', () => {
+    setTimeout(() => { if (document.activeElement !== input) closeMentionDropdown(view); }, 0);
+  });
+  // 消息发送即关：send() 清空 input 是程序化赋值、不触发 input 事件，借发送键点击同步收面板。
+  sendBtn.addEventListener('click', () => { closeMentionDropdown(view); });
 
   // Ask/skill indicator cancel buttons
   {
