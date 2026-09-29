@@ -275,7 +275,9 @@ object GatewayMain extends IOApp:
       // P1-2 批 A：内置 Tool 桥接进 IR 命令表——时机钉（必须在 ToolLoader.reload 与
       // MCP startAll 之后；本 for-comprehension 同 fiber 串行保证次序）。失败
       // best-effort 记 ERROR 不炸 boot（单件失败已在 reindex 内跳过）。
-      _ <- IO(IrGateway.initBridge(shared)).handleErrorWith(e =>
+      // 批 C：传 agentLibrary（本函数既有形参，AgentLibrary extends AgentLibraryView）
+      // ⇒ ToolContext 模板 agentLibrary 槽，Delegate 经桥真实可用。
+      _ <- IO(IrGateway.initBridge(shared, Some(agentLibrary))).handleErrorWith(e =>
         logger.error(s"IR tool bridge init failed: ${Option(e.getMessage).getOrElse(e.toString)}")
       )
     yield ()

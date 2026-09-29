@@ -57,11 +57,18 @@ end PolicyRule
  * `dangerousBash` 是既有危险判定的注入点（先例 `core.permissions.ToolReversibility`
  * / `BashTool.dangerLevel`）——`RealBash` 绑定命令**必须**与它合成（§8.2）；默认
  * fail-closed 为「一律危险」，装配面注入真判定后才可能放行。
+ *
+ * `dangerousBashNames`（批 C，P1-2）：`RealBash` 之外的**bash 面命令名集**——引擎
+ * 无法从 `Binding.Dev` 辨认「这是个 shell」，装配面把桥接 bash（如 `dev:tool:bash`）
+ * 的 IR 名注入此集，`decide()` 即对它与 `RealBash` 同款合成危险判定。默认 `Set.empty`
+ * ⇒ 引擎行为与扩展前逐字节一致（`RealBash` 语义不动）。
  */
 final case class PolicyConfig(
   knownCapKinds: Set[String] = Set("FsRead", "FsWrite", "Net", "Exec", "Secret", "MemoryWrite"),
   rules: List[PolicyRule] = Nil,
   dangerousBash: (String, JsonObject) => Boolean = (_, _) => true,
+  /** 与 `dangerousBash` 合成的非 `RealBash` 命令名集（批 C 组合面；默认 ∅ = 不扩）。 */
+  dangerousBashNames: Set[String] = Set.empty,
   /** 无规则命中时的缺省：纯读命令放行，其余（写/网/执行/凭证）缺省 `Ask`。 */
   defaultDenyUnknownTenant: Boolean = false
 )
@@ -74,7 +81,8 @@ final case class PolicyConfig(
  * 与既有安全档的合成（落实 V2 红线 5，[D24]）：
  *  - 档位**可以**把 `Ask` 降为 `Allow`（这正是 `auto-all` 的既有语义）；
  *  - **禁止**把 `Deny` 升为 `Allow` —— caps 判定是**硬底**；
- *  - `binding=RealBash` 的命令**必须**与既有危险判定合成（此处注入 `dangerousBash`）。
+ *  - `binding=RealBash` 的命令**必须**与既有危险判定合成（此处注入 `dangerousBash`）；
+ *    批 C（P1-2）起，名 ∈ `dangerousBashNames` 的命令（桥接 bash 面）同款合成。
  */
 final class PolicyEngine(val config: PolicyConfig):
 
@@ -103,10 +111,14 @@ final class PolicyEngine(val config: PolicyConfig):
               if target.capKinds.subsetOf(Set("FsRead")) then Decision.Allow
               else Decision.Ask("no matching policy rule for a capability-bearing command", "default:no-rule")
           val withBash =
-            target.binding match
-              case Some(_: Binding.RealBash) if config.dangerousBash(target.command, target.args) =>
-                Decision.combine(base, Decision.Ask("bash command is not provably safe", "bash:danger"))
-              case _ => base
+            // 批 C（P1-2）：合成面从「仅 RealBash」扩为「RealBash ∨ 名 ∈ dangerousBashNames」
+            // ——桥接 bash（Binding.Dev）由此接通同一危险底座。合成只升不降（combine 的
+            // 既有语义：Deny 恒 Deny；Allow+危险 ⇒ Ask），Ask 字面量逐字不动。
+            val bashFace = target.binding.exists(_.isInstanceOf[Binding.RealBash]) ||
+              config.dangerousBashNames.contains(target.command)
+            if bashFace && config.dangerousBash(target.command, target.args) then
+              Decision.combine(base, Decision.Ask("bash command is not provably safe", "bash:danger"))
+            else base
           composeSafety(withBash, safety)
 
     end if

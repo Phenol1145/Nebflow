@@ -78,7 +78,9 @@ object IrTestKit:
     extra: List[CommandDef] = Nil,
     limits: IrLimits = IrLimits.default,
     knownCapKinds: Set[String] = PolicyConfig().knownCapKinds,
-    registry: Option[CommandRegistry] = None
+    registry: Option[CommandRegistry] = None,
+    /** 整份策略配置直注（批 C：注入 dangerousBash/dangerousBashNames 组合面）；None = 现行缺省装配。 */
+    policyCfg: Option[PolicyConfig] = None
   ): IO[Harness] =
     for
       counter <- Ref.of[IO, Int](0)
@@ -95,7 +97,7 @@ object IrTestKit:
         r
       })
     yield
-      val policy = new PolicyEngine(PolicyConfig(knownCapKinds = knownCapKinds, rules = rules))
+      val policy = new PolicyEngine(policyCfg.getOrElse(PolicyConfig(knownCapKinds = knownCapKinds, rules = rules)))
       val router = new Router(reg, policy, AuditSink.inMemory(auditRef), limits)
       Harness(root, router, auditRef, counter, policy)
 

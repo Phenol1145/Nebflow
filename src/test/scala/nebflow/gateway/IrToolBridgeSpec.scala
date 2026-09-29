@@ -5,14 +5,17 @@ import io.circe.syntax.*
 import io.circe.{Json, JsonObject}
 import munit.CatsEffectSuite
 import nebflow.core.tools.{RemoteExecutor, ToolRegistry}
+import nebflow.core.task.{FileTaskStore, TaskCreateInput, TaskStore}
 import nebflow.ir.*
 import nebflow.shared.PathUtil
 
 /**
- * P1-2 批 A + 批 B 桥接的一致性用例：声明级表驱动（十五件全覆盖 / 双向完备 /
- * 单键空间不越界 / 逐件精确 caps 集 / 机械 params 纪律 / 注册与幂等 reindex）+
- * 真实经 IR 执行（Read 真文件 / **写面正负两腿** / tasklist 隔离根 / 确定性负测四条 /
- * policy Ask@ConfirmEdits）+ LLM 可见面钉（§7.4 检查点①：桥不开模型面侧门）。
+ * P1-2 批 A + 批 B + 批 C 桥接的一致性用例：声明级表驱动（**三十件全覆盖 / 双向完备 +
+ * 未注册件反向断言（AskUserQuestion）** / 单键空间不越界 / 逐件精确 caps 集 / 机械
+ * params 纪律 / 注册与幂等 reindex）+ 真实经 IR 执行（Read 真文件 / **写面正负两腿** /
+ * tasklist 隔离根 / **批 C：bash 真执行 + teamtasklist 真读 + dangerousBash 组合
+ * Ask 两腿** / 确定性负测组）+ LLM 可见面钉（§7.4 检查点①：桥不开模型面侧门，扩到
+ * dev:tool:bash）。
  *
  * 批 B 写面核心验证点（缺一不可）：
  *  - 正腿：显式 Allow 规则（`dev:tool:write` 精确名）+ Safety.ConfirmEdits ⇒ 真写
@@ -20,6 +23,19 @@ import nebflow.shared.PathUtil
  *  - 负腿：harness rules=Nil（无 askRule）+ Safety.ConfirmEdits ⇒ `await_approval`
  *    且目标文件零变化——无规则时 FsWrite 走 `default:no-rule` 缺省 Ask（Policy 缺省
  *    分支），执行前短路 ⇒ 零副作用。
+ *
+ * 批 C 核心验证点（缺一不可）：
+ *  - dangerousBash 组合两腿（任务书点名）：`Allow(dev:tool:bash)` 精确名 +
+ *    ConfirmEdits 下——危险命令（`rm -rf …`）被组合面硬底拉回 `await_approval`
+ *    （rule=`bash:danger`、零执行）；安全命令（`echo`）放行且真 BashTool 执行
+ *    （final.text 含 marker 与恒存的 `(cwd:` 行）——两腿合证；
+ *  - 高能力面真实执行（任务书点名）：`dev:tool:teamtasklist` 经 `taskStore` 模板
+ *    槽直读 FileTaskStore（套件级隔离 dataRoot + 独有 team scope，hwm 单例无跨套
+ *    污染——TaskStore.scala 进程级 hwmRef 注记）；
+ *  - 确定性负测组：subtask/teamtaskcreate/load-team/delegate(None lib)/sendmessage
+ *    ——诚实拒答文案 + 零副作用（「注册面存在、执行面诚实拒答」形态，批 B 先例）；
+ *  - 未注册件反向断言：AskUserQuestion 缺 `agentActorRef` 槽（两模式必死路）⇒ 不注册
+ *    （IrToolCaps.bridged 无行 / defs 无名 / ToolRegistry 本体不动）。
  *
  * caps 断言是**精确集合相等**（既是下限也是上限）：glob/grep 退回仅 FsRead（漏报
  * Exec）必红；nodeedit 漏报 Exec 同红；给任一件塞多余 cap 也红。
@@ -29,7 +45,10 @@ import nebflow.shared.PathUtil
  */
 class IrToolBridgeSpec extends CatsEffectSuite:
 
-  private val defs: List[CommandDef] = IrToolBridge.defs(None)
+  // lazy on purpose：MemoryNoteTool.inputSchema 是 def 且描述文本内嵌 dataRoot 派生
+  // 路径——val 会在类构造期（beforeAll 的 setDataRoot 之前）冻结默认根路径，导致
+  // 与测试期重算的 augmentSchema 逐字节比较失败；lazy 使两侧同在隔离根下求值。
+  private lazy val defs: List[CommandDef] = IrToolBridge.defs(None)
 
   private var dataRootHome: os.Path = null
   private var prevRoot: os.Path = null
@@ -81,10 +100,10 @@ class IrToolBridgeSpec extends CatsEffectSuite:
 
   private def walk(p: os.Path): Set[String] = os.walk(p).map(_.toString).toSet
 
-  // ── 声明级：十五件全覆盖 / 命名与 binding ──────────────────────
+  // ── 声明级：三十件全覆盖 / 命名与 binding ──────────────────────
 
-  test("表驱动·十五件全覆盖：恰 15 件，irName 集合精确相等，语法/首段/binding 全过"):
-    assertEquals(defs.length, 15)
+  test("表驱动·三十件全覆盖：恰 30 件，irName 集合精确相等，语法/首段/binding 全过"):
+    assertEquals(defs.length, 30)
     assertEquals(
       defs.map(_.name).toSet,
       Set(
@@ -104,7 +123,23 @@ class IrToolBridgeSpec extends CatsEffectSuite:
         "dev:tool:projectcreate",
         "dev:tool:nodeedit",
         "dev:tool:tasklist",
-        "dev:tool:taskboard"
+        "dev:tool:taskboard",
+        // 批 C 高能力面十五件（同机械命名规则；AskUserQuestion 不注册——见反向断言腿）
+        "dev:tool:bash",
+        "dev:tool:websearch",
+        "dev:tool:webfetch",
+        "dev:tool:curl",
+        "dev:tool:mail",
+        "dev:tool:sendmessage",
+        "dev:tool:delegate",
+        "dev:tool:subtask",
+        "dev:tool:memorynote",
+        "dev:tool:schedule",
+        "dev:tool:teamtaskcreate",
+        "dev:tool:teamtaskupdate",
+        "dev:tool:teamtasklist",
+        "dev:tool:load",
+        "dev:tool:agentcontrol"
       )
     )
     defs.foreach { cmd =>
@@ -127,6 +162,12 @@ class IrToolBridgeSpec extends CatsEffectSuite:
     // 反向完备：桥接 defs 不含 dev:fs 两件；两件也不在桥表里
     assert(defs.map(_.name).forall(!_.startsWith("dev:fs:")))
     assert(rows.map(_.irName).forall(!_.startsWith("dev:fs:")))
+    // 批 C·未注册件反向断言三连（AskUserQuestion——缺 agentActorRef 槽，两模式必然
+    // 运行时失败，缺席优于假门）：桥表无行 / defs 无名 / 工具本体仍在 ToolRegistry
+    // （LLM 面零扰动）
+    assert(!rows.exists(_.toolName == "AskUserQuestion"), "AskUserQuestion must NOT be in the bridge table")
+    assert(defs.forall(_.name != "dev:tool:askuserquestion"), "dev:tool:askuserquestion must NOT be defined")
+    assert(ToolRegistry.TOOL_MAP.contains("AskUserQuestion"), "the tool itself stays in ToolRegistry untouched")
 
   test("表驱动·argsSchema 机械生成：逐字节 == augmentSchema 后的 inputSchema（保持 device 面）"):
     IrToolCaps.bridged.foreach { row =>
@@ -139,10 +180,11 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       )
     }
     // remoteable 六件中的本批五件带 device（remoteableTools = Bash/Read/Write/Edit/Glob/Grep）；
-    // 其余十件不带
-    List("dev:tool:read", "dev:tool:write", "dev:tool:edit", "dev:tool:glob", "dev:tool:grep").foreach { n =>
-      assertEquals(propType(byName(n), "device"), Some("string"), s"device of $n")
-    }
+    // 批 C 补第六件 bash；其余二十四件不带
+    List("dev:tool:read", "dev:tool:write", "dev:tool:edit", "dev:tool:glob", "dev:tool:grep", "dev:tool:bash")
+      .foreach { n =>
+        assertEquals(propType(byName(n), "device"), Some("string"), s"device of $n")
+      }
     List(
       "dev:tool:nodelist",
       "dev:tool:nodecancel",
@@ -153,7 +195,23 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       "dev:tool:projectcreate",
       "dev:tool:nodeedit",
       "dev:tool:tasklist",
-      "dev:tool:taskboard"
+      "dev:tool:taskboard",
+      // 批 C 其余十四件（Bash 之外全不带）
+      "dev:tool:websearch",
+      "dev:tool:webfetch",
+      "dev:tool:curl",
+      // dev:tool:mail 不在此列：Mail 自有 device 属性（设备腿地址面，schema 原生键，
+      // 非 augmentSchema 注入——注入面断言对它无意义）
+      "dev:tool:sendmessage",
+      "dev:tool:delegate",
+      "dev:tool:subtask",
+      "dev:tool:memorynote",
+      "dev:tool:schedule",
+      "dev:tool:teamtaskcreate",
+      "dev:tool:teamtaskupdate",
+      "dev:tool:teamtasklist",
+      "dev:tool:load",
+      "dev:tool:agentcontrol"
     ).foreach { n =>
       assertEquals(schemaProps(byName(n)).contains("device"), false, s"device must not be injected into $n")
     }
@@ -178,7 +236,24 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       "dev:tool:projectcreate" -> Set(Cap.FsWrite("*")),
       "dev:tool:nodeedit" -> Set(Cap.FsWrite("*"), Cap.Exec),
       "dev:tool:tasklist" -> Set(Cap.FsWrite("*")),
-      "dev:tool:taskboard" -> Set(Cap.FsWrite("*"))
+      "dev:tool:taskboard" -> Set(Cap.FsWrite("*")),
+      // 批 C 十五件（命令面不可静态判定/传递性/侦察修正处见 IrToolCaps 行内注；
+      // agentcontrol 无文件/网络/spawn 声明面 ⇒ 空集）
+      "dev:tool:bash" -> Set(Cap.Exec, Cap.FsRead("*"), Cap.FsWrite("*"), Cap.Net("*")),
+      "dev:tool:websearch" -> Set(Cap.Net("*")),
+      "dev:tool:webfetch" -> Set(Cap.Net("*")),
+      "dev:tool:curl" -> Set(Cap.Net("*")),
+      "dev:tool:mail" -> Set(Cap.FsRead("*"), Cap.FsWrite("*"), Cap.Net("*")),
+      "dev:tool:sendmessage" -> Set(Cap.FsRead("*"), Cap.FsWrite("*"), Cap.Net("*")),
+      "dev:tool:delegate" -> Set(Cap.FsRead("*"), Cap.FsWrite("*"), Cap.Exec, Cap.Net("*")),
+      "dev:tool:subtask" -> Set(Cap.FsRead("*"), Cap.FsWrite("*"), Cap.Exec, Cap.Net("*")),
+      "dev:tool:memorynote" -> Set(Cap.MemoryWrite, Cap.FsWrite("*")),
+      "dev:tool:schedule" -> Set(Cap.FsWrite("*")),
+      "dev:tool:teamtaskcreate" -> Set(Cap.FsWrite("*")),
+      "dev:tool:teamtaskupdate" -> Set(Cap.FsWrite("*")),
+      "dev:tool:teamtasklist" -> Set(Cap.FsRead("*")),
+      "dev:tool:load" -> Set(Cap.FsRead("*"), Cap.FsWrite("*")),
+      "dev:tool:agentcontrol" -> Set.empty[Cap]
     )
     defs.foreach { cmd =>
       assertEquals(cmd.caps, expected(cmd.name), s"caps of ${cmd.name}")
@@ -188,7 +263,7 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       assert(cmd.capKinds.forall(known.contains), s"cap kinds of ${cmd.name} must be known to the engine")
     }
 
-  test("表驱动·pathArgs/io/audiences/llmName：十五件统一（pathArgs=∅、io=Text、Human、llmName=旧名）"):
+  test("表驱动·pathArgs/io/audiences/llmName：三十件统一（pathArgs=∅、io=Text、Human、llmName=旧名）"):
     defs.foreach { cmd =>
       assertEquals(cmd.pathArgs, Set.empty[String], s"pathArgs of ${cmd.name}")
       assertEquals(cmd.io, CommandIo(stdin = None, stdout = StreamKind.Text), s"io of ${cmd.name}")
@@ -256,10 +331,46 @@ class IrToolBridgeSpec extends CatsEffectSuite:
     val taskBoard = byName("dev:tool:taskboard").params.map(_.name).toSet
     assertEquals(taskBoard.intersect(Set("blocks", "links")), Set.empty[String])
     assert(taskBoard.contains("action") && taskBoard.contains("title"))
+    // 批 C 锚①：bash 糖面恰 {command, description, background_job_id, device}——
+    // timeout（number）/run_in_background、persistent、cancel_background_job（boolean）
+    // 不进；device（string，remoteable 注入）机械进糖
+    val bash = byName("dev:tool:bash").params.map(_.name).toSet
+    assertEquals(bash, Set("command", "description", "background_job_id", "device"))
+    // 批 C 锚②：mail 含 {address, device, message, type, chainId}（string 全进），
+    // images/attachments（array）不进
+    val mail = byName("dev:tool:mail").params.map(_.name).toSet
+    assertEquals(mail, Set("address", "device", "message", "type", "chainId"))
+    // 批 C 锚③：sendmessage 含 {to, message, targetDir} 不含 overwrite（boolean）/
+    // attachments（array）
+    val send = byName("dev:tool:sendmessage").params.map(_.name).toSet
+    assertEquals(send, Set("to", "message", "targetDir"))
+    // 批 C 锚④：memorynote 五串键全进
+    assertEquals(
+      byName("dev:tool:memorynote").params.map(_.name).toSet,
+      Set("target", "action", "section", "match", "content")
+    )
+    // 批 C 锚⑤：teamtaskcreate 不含 blockedBy（array）；teamtasklist 糖面恰 {team, status}
+    val teamCreate = byName("dev:tool:teamtaskcreate").params.map(_.name).toSet
+    assertEquals(teamCreate.intersect(Set("blockedBy")), Set.empty[String])
+    assertEquals(byName("dev:tool:teamtasklist").params.map(_.name).toSet, Set("team", "status"))
+    // 批 C 锚⑥：schedule 的 triggerAt（type=[integer,string] 数组形态 ⇒ admitsString
+    // 不认）不进糖；action/content/repeat/name/id（string）进——机械规则是唯一裁决面
+    val schedule = byName("dev:tool:schedule").params.map(_.name).toSet
+    assertEquals(schedule, Set("action", "content", "repeat", "name", "id"))
+    // 批 C 锚⑦：agentcontrol 的 confirm（boolean）不进，糖面恰 {action, sessionId,
+    // reason}；load 糖面恰 {type, name}
+    assertEquals(byName("dev:tool:agentcontrol").params.map(_.name).toSet, Set("action", "sessionId", "reason"))
+    assertEquals(byName("dev:tool:load").params.map(_.name).toSet, Set("type", "name"))
+    // 批 C 锚⑧：三件 Net 面——websearch 恰 {query, engine}（max_results number、
+    // allowed/blocked_domains array 不进）；webfetch 恰 {url, format}；curl 恰
+    // {url, method, body}（headers object、timeout number 不进）
+    assertEquals(byName("dev:tool:websearch").params.map(_.name).toSet, Set("query", "engine"))
+    assertEquals(byName("dev:tool:webfetch").params.map(_.name).toSet, Set("url", "format"))
+    assertEquals(byName("dev:tool:curl").params.map(_.name).toSet, Set("url", "method", "body"))
 
   // ── 注册与幂等 reindex ──────────────────────────────────────
 
-  test("注册与幂等：十五件注册全 Right；同档重注册=N4 碰撞；reindex 连跑两次不丢件"):
+  test("注册与幂等：三十件注册全 Right；同档重注册=N4 碰撞；reindex 连跑两次不丢件"):
     IO.delay {
       val reg = new CommandRegistry()
       DevCommands.base.foreach(c => reg.register(c).fold(e => fail(s"base ${c.name}: ${e.message}"), _ => ()))
@@ -270,13 +381,16 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       // 先摘后挂 ⇒ Right
       reg.unregister(defs.head.name)
       assertEquals(reg.register(defs.head).map(_.name), Right(defs.head.name))
-      // 幂等 reindex ×2：十五件仍在，名集恰为 fs 两件 + tool 十五件
+      // 幂等 reindex ×2：三十件仍在，名集恰为 fs 两件 + tool 三十件
       IrToolBridge.reindex(reg, None)
       IrToolBridge.reindex(reg, None)
       assertEquals(reg.names.toSet, (DevCommands.base.map(_.name) ++ defs.map(_.name)).toSet)
       assert(reg.get("dev:tool:read").isDefined)
       assert(reg.get("dev:tool:write").isDefined)
       assert(reg.get("dev:tool:taskboard").isDefined)
+      assert(reg.get(IrToolCaps.bashIrName).isDefined, "dev:tool:bash must survive reindex")
+      assert(reg.get("dev:tool:teamtasklist").isDefined, "dev:tool:teamtasklist must survive reindex")
+      assert(reg.get("dev:tool:agentcontrol").isDefined, "dev:tool:agentcontrol must survive reindex")
     }
 
   test("单键空间不越界：ToolRegistry 无任何 dev: 前缀键（桥只读 TOOL_MAP）"):
@@ -546,6 +660,204 @@ class IrToolBridgeSpec extends CatsEffectSuite:
           "dev:tool:write",
           JsonObject("file_path" -> "/tmp/llm-side-door.txt".asJson, "content" -> "x".asJson)
         )
+        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm).map { r =>
+          assertEquals(r.status, Status.Invalid)
+          assertEquals(r.exit, Some(2))
+          assertEquals(r.error.map(_.code), Some(Codes.InvalidArgs))
+          assertEquals(r.error.flatMap(_.details("reason")).flatMap(_.asString), Some("audience"))
+        }
+      }
+    }
+
+  // ── 真实执行·批 C 高能力面（任务书点名项：dangerousBash 组合 + 真执行闭环）────
+
+  test(
+    "批 C·dangerousBash 组合两腿：Allow(dev:tool:bash)+ConfirmEdits 下危险命令被硬底拉回 Ask（rule=bash:danger、零执行），安全命令放行且真执行"
+  ):
+    IrTestKit.vfs().flatMap { root =>
+      // 组合面装配 = IrGateway 生产装配的同构注入：谓词单源 IrToolBridge.bashDanger
+      // （BashTool.isDangerous），匹配名集 = Set(bashIrName)；规则 = 精确名 Allow ::
+      // askRules（Allow 在前，rules.find 首个命中生效——证明安全腿放行来自显式规则）
+      IrTestKit
+        .harness(
+          root,
+          extra = defs,
+          policyCfg = Some(
+            PolicyConfig(
+              rules = PolicyRule(name = IrToolCaps.bashIrName, decision = Decision.Allow) :: IrToolCaps.askRules,
+              dangerousBash = IrToolBridge.bashDanger,
+              dangerousBashNames = Set(IrToolCaps.bashIrName)
+            )
+          )
+        )
+        .flatMap { h =>
+          val danger =
+            run(
+              h,
+              Ir.Call(IrToolCaps.bashIrName, JsonObject("command" -> "rm -rf /tmp/ir-bridge-danger".asJson)),
+              safety = Safety.ConfirmEdits
+            )
+          val safe =
+            run(
+              h,
+              Ir.Call(IrToolCaps.bashIrName, JsonObject("command" -> "echo ir-safe".asJson)),
+              safety = Safety.ConfirmEdits
+            )
+          for
+            rDanger <- danger
+            rSafe <- safe
+            records <- h.records
+          yield
+            // 危险腿：Allow+危险 ⇒ Ask（combine 只升不降），rule 逐字 = "bash:danger"，
+            // 执行前短路 ⇒ 零执行
+            assertEquals(rDanger.status, Status.AwaitApproval)
+            assertEquals(rDanger.exit, None)
+            assertEquals(rDanger.results, Nil)
+            val ap = rDanger.approval.getOrElse(fail("approval body missing"))
+            assertEquals(ap.nodes.map(_.command), List(IrToolCaps.bashIrName))
+            assertEquals(ap.rule, "bash:danger")
+            // 安全腿：显式 Allow 放行 + 非危险 ⇒ 真 BashTool 执行（先例 BashToolSpec 真
+            // echo 同环境）；final.text 含 marker 与 formatResult 恒存 (cwd: 行
+            assertEquals(rSafe.status, Status.Done, s"error=${rSafe.error.map(_.message)}")
+            assertEquals(rSafe.exit, Some(0))
+            rSafe.finalStdout match
+              case Some(StreamValue.Text(t)) =>
+                assert(t.contains("ir-safe"), s"echo marker expected: $t")
+                assert(t.contains("(cwd:"), s"cwd line expected: $t")
+              case other => fail(s"expected text stdout, got $other")
+            // 审计：危险腿 ask/bash:danger + 安全腿 allow（决策来自规则与组合面，非档位）
+            assertEquals(
+              records.map(r => r.command -> r.decision).toSet,
+              Set(IrToolCaps.bashIrName -> "ask", IrToolCaps.bashIrName -> "allow")
+            )
+            assert(records.find(_.decision == "ask").exists(_.rule == Some("bash:danger")))
+            assert(records.forall(r => !r.toJson.asObject.get.contains("args")))
+          end for
+        }
+    }
+
+  test("批 C·高能力面真实执行①：dev:tool:teamtasklist 真读 FileTaskStore（taskStore 模板槽 + 显式 team 两机制闭环）"):
+    IrTestKit.vfs().flatMap { root =>
+      // 独有 team scope（TaskStore 进程级 hwmRef 单例注记：跨套件必须用独有名）；
+      // FileTaskStore.root 是 def ⇒ 动态取套件级隔离 dataRoot
+      bridgedHarness(root).flatMap { h =>
+        FileTaskStore
+          .create(
+            TaskStore.teamScopeKey("ir-bridge-batchc"),
+            TaskCreateInput(
+              subject = "batch-c bridge entry",
+              description = "seeded by IrToolBridgeSpec"
+            )
+          )
+          .flatMap { _ =>
+            val plan = Ir.Call("dev:tool:teamtasklist", JsonObject("team" -> "ir-bridge-batchc".asJson))
+            run(h, plan).map { r =>
+              assertEquals(r.status, Status.Done, s"error=${r.error.map(_.message)}")
+              assertEquals(r.exit, Some(0))
+              r.finalStdout match
+                case Some(StreamValue.Text(t)) =>
+                  assert(t.contains("Team tasks for 'ir-bridge-batchc' (1)"), s"list text: $t")
+                  assert(t.contains("#1"), s"#1 entry expected: $t")
+                case other => fail(s"expected text stdout, got $other")
+            }
+          }
+      }
+    }
+
+  test("批 C·高能力面真实执行②：dev:tool:bash echo 经 IR 全链真执行（前台腿，final.text 含 marker 与 (cwd: 行）"):
+    IrTestKit.vfs().flatMap { root =>
+      bridgedHarness(root).flatMap { h =>
+        val plan = Ir.Call(IrToolCaps.bashIrName, JsonObject("command" -> "echo ir-bridge-batchc".asJson))
+        run(h, plan).map { r =>
+          assertEquals(r.status, Status.Done, s"error=${r.error.map(_.message)}")
+          assertEquals(r.exit, Some(0))
+          r.finalStdout match
+            case Some(StreamValue.Text(t)) =>
+              assert(t.contains("ir-bridge-batchc"), s"echo marker expected: $t")
+              assert(t.contains("(cwd:"), s"cwd line expected (formatResult恒存): $t")
+            case other => fail(s"expected text stdout, got $other")
+        }
+      }
+    }
+
+  test("批 C·确定性负测组：subtask/teamtaskcreate/load-team/delegate/sendmessage（诚实拒答，零副作用）"):
+    IrTestKit.vfs().flatMap { root =>
+      bridgedHarness(root).flatMap { h =>
+        // defs(None) ⇒ lib=None ⇒ delegate 走确定性拒腿（生产 Some(agentLibrary) 才真实可用）
+        val before = walk(dataRootHome)
+        val subTask =
+          run(h, Ir.Call("dev:tool:subtask", JsonObject("prompt" -> "x".asJson, "description" -> "d".asJson)))
+        val teamCreate = run(
+          h,
+          Ir.Call(
+            "dev:tool:teamtaskcreate",
+            JsonObject("subject" -> "s".asJson, "description" -> "d".asJson)
+          )
+        )
+        val load = run(h, Ir.Call("dev:tool:load", JsonObject("type" -> "team".asJson, "name" -> "no-such".asJson)))
+        val delegate =
+          run(h, Ir.Call("dev:tool:delegate", JsonObject("task" -> "t".asJson, "description" -> "d".asJson)))
+        // sendmessage 走 **device 腿**：好友腿的可用性取决于 FriendMessageTool.service
+        // 进程级单例——neblink 域套件（FriendMessageToolSpec/FriendAttachGateSpec）会
+        // initialize 它,全量回归下本套件晚于其运行 ⇒ 好友腿结局随套件次序漂移（全量
+        // 回归实测翻红）。device 腿只读 ctx.sharedResources（桥模板 sr=None ⇒
+        // resources=None）——只依赖模板,不依赖任何全局状态,任意次序下确定性拒答。
+        val send =
+          run(
+            h,
+            Ir.Call("dev:tool:sendmessage", JsonObject("to" -> "device:no-such".asJson, "message" -> "hi".asJson))
+          )
+        for
+          rSubTask <- subTask
+          rTeamCreate <- teamCreate
+          rLoad <- load
+          rDelegate <- delegate
+          rSend <- send
+        yield
+          List(
+            rSubTask -> "subtask",
+            rTeamCreate -> "teamtaskcreate",
+            rLoad -> "load",
+            rDelegate -> "delegate",
+            rSend -> "sendmessage"
+          )
+            .foreach { (r, label) =>
+              assertEquals(r.status, Status.Done, s"$label status")
+              assertEquals(r.exit, Some(1), s"$label exit")
+              assertEquals(r.results.head.error.map(_.code), Some(Codes.CommandFailed), s"$label error code")
+            }
+          // 拒答文案逐件（各自述缺失的身份/槽位/服务面）
+          assert(
+            rSubTask.results.head.error.exists(_.message.contains("No agent definition available")),
+            s"subtask message=${rSubTask.results.head.error.map(_.message)}"
+          )
+          assert(
+            rTeamCreate.results.head.error.exists(_.message.contains("only available to team agents")),
+            s"teamtaskcreate message=${rTeamCreate.results.head.error.map(_.message)}"
+          )
+          // load-team：文件不存在腿先拦（agentActorRef 缺失腿另证——两条腿都是 exit 1 零副作用）
+          assert(
+            rLoad.results.head.error.exists(_.message.contains("Team file not found")),
+            s"load message=${rLoad.results.head.error.map(_.message)}"
+          )
+          assert(
+            rDelegate.results.head.error.exists(_.message.contains("No agent library available")),
+            s"delegate message=${rDelegate.results.head.error.map(_.message)}"
+          )
+          assert(
+            rSend.results.head.error.exists(_.message.contains("Device messaging is unavailable")),
+            s"sendmessage message=${rSend.results.head.error.map(_.message)}"
+          )
+          // 零副作用：隔离根文件树逐字节不变（无 spawn/无 team task 落盘/无网络外呼）
+          assertEquals(walk(dataRootHome), before, "negative group must not write anything")
+        end for
+      }
+    }
+
+  test("LLM 可见面钉（批 C 高能力面）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ invalid + router.invalid_args(reason=audience)"):
+    IrTestKit.vfs().flatMap { root =>
+      bridgedHarness(root).flatMap { h =>
+        val plan = Ir.Call(IrToolCaps.bashIrName, JsonObject("command" -> "echo side-door".asJson))
         run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm).map { r =>
           assertEquals(r.status, Status.Invalid)
           assertEquals(r.exit, Some(2))

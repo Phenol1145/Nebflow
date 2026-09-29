@@ -37,8 +37,18 @@ private[gateway] object IrGateway:
    * （[[IrToolCaps.askRule]]：桥接件全为 `prefix="*"` 的 VFS 外不透明宿主访问，
    * §8.1「无法做包含性判定 ⇒ 不假装能判」）。规则按名前缀只罩 `dev:tool:*` ⇒
    * `dev:fs:*` 的缺省行为不变；`auto-all` 档把 `Ask` 折 `Allow` 是既有档位语义。
+   * 批 C（P1-2）接通危险 bash 组合底座：`dangerousBash` = [[IrToolBridge.bashDanger]]
+   * （单源 `BashTool.isDangerous`）、`dangerousBashNames` = 桥接 bash 的 IR 名——
+   * 仅当用户写显式 `Allow(dev:tool:bash)` 时危险命令被硬底拉回 `Ask`（rule
+   * `bash:danger`）、安全命令放行；默认 askRule 下 `Ask+Ask=Ask` 逐字节不变。
    */
-  private lazy val policy: PolicyEngine = new PolicyEngine(PolicyConfig(rules = IrToolCaps.askRules))
+  private lazy val policy: PolicyEngine = new PolicyEngine(
+    PolicyConfig(
+      rules = IrToolCaps.askRules,
+      dangerousBash = IrToolBridge.bashDanger,
+      dangerousBashNames = Set(IrToolCaps.bashIrName)
+    )
+  )
 
   private lazy val auditSink: AuditSink = jsonlAuditSink()
 
@@ -47,14 +57,16 @@ private[gateway] object IrGateway:
   def instance: Router = router
 
   /**
-   * P1-2 桥接装载入口（幂等 reindex）：把批 A 七件内置 Tool 注册进 IR 命令表
-   * （[[IrToolBridge.reindex]]：先摘后挂，单件失败记 ERROR 跳过）。时机钉：由
+   * P1-2 桥接装载入口（幂等 reindex）：把批 A/B/C 三十件内置 Tool 注册进 IR 命令表
+   * （[[IrToolBridge.reindex]]：先摘后挂，单件失败记 ERROR 跳过）。`lib`（批 C） =
+   * AgentLibrary 视图，注入 ToolContext 模板的 `agentLibrary` 槽（Delegate 真实
+   * 可用；None ⇒ 确定性拒答）。时机钉：由
    * `GatewayMain.startMcpServers` 在 `loadExternalTools()`（ToolLoader.reload +
    * MCP startAll）之后调用——同 fiber 串行且晚于二者。同步面零抛（整体异常在此
    * 兜底记 ERROR，不炸 boot）。
    */
-  def initBridge(sr: nebflow.core.AgentRuntimePort): Unit =
-    try IrToolBridge.reindex(registry, Some(sr))
+  def initBridge(sr: nebflow.core.AgentRuntimePort, lib: Option[nebflow.core.AgentLibraryView] = None): Unit =
+    try IrToolBridge.reindex(registry, Some(sr), lib)
     catch
       case e: Throwable =>
         logger.error(s"IR tool bridge init failed: ${Option(e.getMessage).getOrElse(e.toString)}")

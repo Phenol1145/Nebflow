@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// smoke-ir-tools.mjs — P1-2 批 A（只读七件）+ 批 B（写面八件）「内置 Tool → IR 命令桥接」
-// 活实例冒烟（2026-09-29）。
+// smoke-ir-tools.mjs — P1-2 批 A（只读七件）+ 批 B（写面八件）+ 批 C（高能力面十五件）
+// 「内置 Tool → IR 命令桥接」活实例冒烟（2026-09-29）。
 //
-// 验收面（.zcode/plans/command-ir-standard.md §7/§8 + P1-2 批 A/B 方案）：
-// dev:tool:* 十五件注册进 IR 命令表、经糖腿/直连 ir 帧真执行；LLM 面不开侧门；
-// dev:tool:* 一律 Ask（auto-all 折 Allow，confirm-edits 成 await_approval）；审计落账。
+// 验收面（.zcode/plans/command-ir-standard.md §7/§8 + P1-2 批 A/B/C 方案）：
+// dev:tool:* 三十件注册进 IR 命令表、经糖腿/直连 ir 帧真执行；LLM 面不开侧门；
+// dev:tool:* 一律 Ask（auto-all 折 Allow，confirm-edits 成 await_approval）；审计落账；
+// AskUserQuestion 不注册（缺 agentActorRef 槽，缺席优于假门——spec 反向断言钉）。
 //
-// 钉十三件事：
+// 钉二十件事：
 //   1. 糖腿 /dev:tool:nodelist（typeless，零参）⇒ done / exit=1 / command.failed +
 //      "Missing 'project' parameter"（默认 auto-all 档把 askRule 的 Ask 折 Allow ⇒
 //      真执行到工具内确定性错误——桥接链路真通，非 stub）；
@@ -20,7 +21,7 @@
 //   5. 审计：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:nodelist 的记录，
 //      decision/caps（含 FsRead(*)）/argsDigest 齐备、无 args 原文（§8.6）；
 //   6. dev:fs:* 零扰动：/dev:fs:ls 仍 done/exit=0（askRule 只罩 dev:tool:*）。
-//   ── 批 B（写面八件，7-13）──────────────────────────────────────────────────
+//  ── 批 B（写面八件，7-13）──────────────────────────────────────────────────
 //   7. 糖腿 /dev:tool:write --file_path <HOME>/ir-smoke-batchb.txt --content …
 //      ⇒ done / exit=0 / final.text 以 OK:CREATED 开头（真 WriteTool 落盘）；
 //   8. 回读对账：/dev:tool:read 同路径 ⇒ "1\tir-smoke-batchb"（写-读经 IR 全链闭环）；
@@ -35,6 +36,26 @@
 //      invalid / router.invalid_args(reason=audience)（写面桥接同样不开模型面侧门）；
 //  13. 审计（写面）：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:write 记录，
 //      decision∈{allow,ask}、caps 含 FsWrite(*)、argsDigest 非空、无 args 原文（§8.6）。
+//  ── 批 C（高能力面十五件，14-20）───────────────────────────────────────────
+//  14. 糖腿 /dev:tool:bash --command hostname ⇒ done / exit=0 / final.text 含 "(cwd:"
+//      （真 BashTool 前台腿；糖 tokenize 无引号 ⇒ 命令取单词面，断言锚定 formatResult
+//      恒存的 cwd 行而非命令输出内容）；
+//  15. 直连 ir 帧真执行：dev:tool:bash args={command:"echo ir-smoke-batchc"} ⇒ exit=0
+//      + final.text 含 "ir-smoke-batchc"（直连帧可带空格命令，补糖面之短）；
+//  16. 糖腿 /dev:tool:teamtasklist --team ir-smoke-team ⇒ exit=0 + final.text 含
+//      "Team tasks"（真实 FileTaskStore 读腿——taskStore 模板槽；隔离实例空队列为
+//      期望态，"No team tasks for 'ir-smoke-team'" 亦 PASS）；
+//  17. 糖腿 /dev:tool:subtask --prompt smoke --description smoke ⇒ done / exit=1 /
+//      command.failed + "No agent definition available"（身份闸先于副作用，零 spawn；
+//      注：SubTask schema required=[prompt,description]，两键齐传才进到工具）；
+//  18. LLM 侧门钉（高能力面）：tenant=llm / ingress=llm 直连 ir 帧调 dev:tool:bash ⇒
+//      invalid / router.invalid_args(reason=audience)（最危险的件也不开模型面侧门）；
+//  19. 审计（高能力面）：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:bash 记录，
+//      decision∈{allow,ask}、caps 含 Exec 与 FsWrite(*)、argsDigest 非空、无 args 原文
+//      （§8.6——args.command 是敏感原文，digest-only 断言尤重）；
+//  20. dev:fs:* 零扰动复钉（/dev:fs:ls 二跑仍 done/exit=0——批 C 十五件注册不扰旧腿；
+//      批 A/B 既有 13 腿在本脚本同跑即复跑）+ 总计数自检（本脚本执行的检查项总数与
+//      期望值逐项对账——批 C 前基线 16/18（档位两态），批 C 后 22/24）。
 //
 // Run: NEBFLOW_URL=http://localhost:8099 NEBFLOW_HOME_DIR=/tmp/nebflow-ir-smoke \
 //        node scripts/smoke-ir-tools.mjs
@@ -52,7 +73,11 @@ if (!HOME) {
 const TOKEN = JSON.parse(readFileSync(join(HOME, 'auth.json'), 'utf8'));
 
 let failed = 0;
+let executed = 0;
+/** 档位两态标记：腿 4/9 走 await_approval 分支时置 true（各多一条 check）。 */
+let confirmMode = false;
 function check(name, ok, extra = '') {
+  executed++;
   if (!ok) failed++;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`);
 }
@@ -192,6 +217,7 @@ try {
     const plan = { call: { name: 'dev:tool:read', args: { file_path: AUTH_JSON } } };
     const p1 = await submitDirect(conn, plan, 'smoke-ir-tools-ask-1');
     if (p1.status === 'await_approval') {
+      confirmMode = true;
       const ap = p1.approval || {};
       const now = new Date();
       const exp = new Date(now.getTime() + 10 * 60 * 1000);
@@ -293,6 +319,7 @@ try {
     const plan = { call: { name: 'dev:tool:write', args: { file_path: askFile.replace(/\\/g, '/'), content: 'ask-leg' } } };
     const p1 = await submitDirect(conn, plan, 'smoke-ir-tools-write-ask-1');
     if (p1.status === 'await_approval') {
+      confirmMode = true;
       const ap = p1.approval || {};
       const now = new Date();
       const exp = new Date(now.getTime() + 10 * 60 * 1000);
@@ -397,9 +424,129 @@ try {
       rec ? `decision=${rec.decision} caps=${JSON.stringify(rec.caps)}` : `no record in ${auditPath}`
     );
   }
+
+  // ── 14. 批 C 糖腿 /dev:tool:bash（真 BashTool 前台腿，锚定恒存 cwd 行）──────────
+  {
+    conn.ws.send(JSON.stringify({ sessionId: SESSION, content: '/dev:tool:bash --command hostname' }));
+    const r = await nextIrResult(conn);
+    const p = r.response || {};
+    check(
+      'sugar /dev:tool:bash --command hostname → done / exit=0 / final.text has "(cwd:" (real BashTool foreground)',
+      p.status === 'done' && p.exit === 0 && typeof p.final?.text === 'string' && p.final.text.includes('(cwd:'),
+      `status=${p.status} exit=${p.exit} final=${JSON.stringify(p.final || {}).slice(0, 60)}`
+    );
+  }
+
+  // ── 15. 直连 ir 帧真执行：dev:tool:bash echo（帧内命令可带空格，补糖面之短）───────
+  {
+    const p = await submitDirect(
+      conn,
+      { call: { name: 'dev:tool:bash', args: { command: 'echo ir-smoke-batchc' } } },
+      'smoke-ir-tools-bash-direct'
+    );
+    check(
+      "direct ir dev:tool:bash {command:'echo ir-smoke-batchc'} → done / exit=0 / marker in final.text",
+      p.status === 'done' && p.exit === 0 && typeof p.final?.text === 'string' &&
+        p.final.text.includes('ir-smoke-batchc'),
+      `status=${p.status} exit=${p.exit} final=${JSON.stringify(p.final || {}).slice(0, 60)}`
+    );
+  }
+
+  // ── 16. 糖腿 /dev:tool:teamtasklist --team ir-smoke-team（真实 FileTaskStore 读腿）──
+  {
+    conn.ws.send(JSON.stringify({ sessionId: SESSION, content: '/dev:tool:teamtasklist --team ir-smoke-team' }));
+    const r = await nextIrResult(conn);
+    const p = r.response || {};
+    const t = typeof p.final?.text === 'string' ? p.final.text : '';
+    check(
+      "sugar /dev:tool:teamtasklist --team ir-smoke-team → done / exit=0 / team render (empty queue is the expected state)",
+      p.status === 'done' && p.exit === 0 && (t.includes("No team tasks for 'ir-smoke-team'") || t.includes('Team tasks')),
+      `status=${p.status} exit=${p.exit} final=${JSON.stringify(p.final || {}).slice(0, 60)}`
+    );
+  }
+
+  // ── 17. 糖腿 /dev:tool:subtask（确定性拒答：身份闸先于副作用，零 spawn）───────────
+  {
+    conn.ws.send(JSON.stringify({
+      sessionId: SESSION,
+      content: '/dev:tool:subtask --prompt smoke --description smoke',
+    }));
+    const r = await nextIrResult(conn);
+    const p = r.response || {};
+    check(
+      'sugar /dev:tool:subtask → done / exit=1 / command.failed / "No agent definition available" (identity gate, zero spawn)',
+      p.status === 'done' && p.exit === 1 && p.error?.code === 'command.failed' &&
+        (p.error?.message || '').includes('No agent definition available'),
+      `status=${p.status} exit=${p.exit} code=${p.error?.code}`
+    );
+  }
+
+  // ── 18. LLM 侧门钉（高能力面）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ audience 拒──
+  {
+    const rid = 'smoke-ir-tools-llm-bash';
+    conn.ws.send(JSON.stringify({
+      type: 'ir',
+      sessionId: SESSION,
+      request: {
+        ir: 1,
+        plan: { call: { name: 'dev:tool:bash', args: { command: 'echo side-door' } } },
+        tenant: { kind: 'llm', session: SESSION, agent: 'smoke' },
+        ingress: 'llm',
+        sessionId: SESSION,
+        requestId: rid,
+      },
+    }));
+    const r = await waitFor(conn, (m) => m.type === 'irResult' && m.requestId === rid, 15000, 'irResult (llm bash gate)');
+    const p = r.response || {};
+    check(
+      'llm ingress dev:tool:bash → invalid / router.invalid_args(reason=audience) (no LLM side door)',
+      p.status === 'invalid' && p.exit === 2 && p.error?.code === 'router.invalid_args' &&
+        p.error?.details?.reason === 'audience',
+      `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason}`
+    );
+  }
+
+  // ── 19. 审计（高能力面）：dev:tool:bash 记录（caps 含 Exec 与 FsWrite(*)；§8.6 digest-only）──
+  {
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const auditPath = join(HOME, 'logs', 'ir', `${day}.jsonl`);
+    let rec = null;
+    if (existsSync(auditPath)) {
+      const lines = readFileSync(auditPath, 'utf8').split('\n').filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const j = JSON.parse(line);
+          if (j.command === 'dev:tool:bash') rec = j;
+        } catch { /* skip partial line */
+        }
+      }
+    }
+    check(
+      `audit ${day}.jsonl: dev:tool:bash record with decision/caps(Exec+FsWrite(*))/argsDigest, no raw args`,
+      rec !== null && ['allow', 'ask'].includes(rec.decision) && Array.isArray(rec.caps) &&
+        rec.caps.includes('Exec') && rec.caps.includes('FsWrite(*)') &&
+        typeof rec.argsDigest === 'string' && rec.argsDigest.length > 0 &&
+        !('args' in rec) && typeof rec.requestId === 'string' && rec.requestId.length > 0,
+      rec ? `decision=${rec.decision} caps=${JSON.stringify(rec.caps)}` : `no record in ${auditPath}`
+    );
+  }
+
+  // ── 20. dev:fs:* 零扰动复钉（批 C 十五件注册不扰旧腿）+ 总计数自检 ───────────────
+  {
+    const p = await submitDirect(conn, { call: { name: 'dev:fs:ls', args: {} } }, 'smoke-ir-tools-fs-batchc');
+    check('dev:fs:ls unchanged after batch C registration → done / exit=0 (askRule scopes to dev:tool:* only)',
+      p.status === 'done' && p.exit === 0,
+      `status=${p.status} exit=${p.exit}`);
+    // 总计数自检：固定腿 12（1,2,2b,3,5,6,7,8,10,11,12,13）+ 档位两态腿 4/9（auto-all
+    // 各 1、confirm-edits 各 2）+ 批 C 七腿（14-20）+ 本自检 1
+    const expected = 12 + (confirmMode ? 4 : 2) + 7 + 1;
+    check(`self-count: executed checks (${executed + 1}) === expected (${expected}, mode=${confirmMode ? 'confirm-edits' : 'auto-all'})`,
+      executed + 1 === expected,
+      `executed=${executed} expected=${expected}`);
+  }
 } finally {
   conn.ws.close();
 }
 
-console.log(failed === 0 ? '# ALL PASS' : `# FAILED: ${failed}`);
+console.log(failed === 0 ? `# ALL PASS (${executed} checks)` : `# FAILED: ${failed}/${executed}`);
 process.exit(failed === 0 ? 0 : 1);
