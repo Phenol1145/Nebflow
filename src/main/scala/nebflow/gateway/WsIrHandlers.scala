@@ -16,6 +16,8 @@ import nebflow.shared.{NebflowLogger, PathUtil, UiMessage}
 import java.time.{Instant, ZoneOffset}
 import java.time.format.DateTimeFormatter
 
+import scala.concurrent.duration.*
+
 /** 进程级装配：注册表/策略/审计口各一份（热注册是 P1 面，P0 只建一次）。 */
 private[gateway] object IrGateway:
 
@@ -57,14 +59,30 @@ private[gateway] object IrGateway:
   def instance: Router = router
 
   /**
+   * 限额/超时让位裁定（保守）：llm 视图 IrLimits 放宽 nodeTimeout 与 maxTextBytes，
+   * 使 IR 限额**永不抢跑**既有治理——declaredToolTimeoutMs（工具自报授权时长，可长于
+   * 60s）、BashResilience（后台硬超时 30min 档）、ToolResultGuard（#38 调校过的上下文
+   * 保护单点：50K chars 阈值持久化+预览）。若 IR router.limit.output 先触发，大 Read
+   * 会从「持久化+预览（isError=false）」劣化为「硬错误」——回归，不让发生。IR §5.2
+   * 限额在此阶段边界内让位（openQuestions 留痕，待作者裁定是否收紧为显式策略条目）。
+   */
+  private[gateway] lazy val llmLimits: IrLimits = IrLimits.default.copy(
+    // > BashBackgroundHardTimeoutMs(30min) 且 > 一切合理 declaredToolTimeoutMs 档
+    nodeTimeout = 24.hours,
+    // > ToolResultGuard 阈值（≤50K chars × UTF-8 4B）的任何真实工具产出——旧直呼路径
+    // 本无此限（guard 在闸后无条件运行），llm 腿不引入新失败面
+    maxTextBytes = 2L * 1024 * 1024 * 1024
+  )
+
+  /**
    * P1-3（LLM ingress 改道）llm 腿专用 Router：同 registry/policy/audit（审计单点不
-   * 分叉），唯限额取 [[nebflow.gateway.IrLlmRoute.llmLimits]]（让位裁定：nodeTimeout/
+   * 分叉），唯限额取 [[llmLimits]]（让位裁定：nodeTimeout/
    * maxTextBytes 放宽，使 IR 限额永不抢跑 declaredToolTimeoutMs/BashResilience/
    * ToolResultGuard——大 Read 不因 IR 抢跑从「持久化+预览」劣化为硬错误）。人侧糖腿/
    * 直连 ir 帧继续走 [[instance]]（默认限额，行为零变化）。
    */
   private[gateway] lazy val llmInstance: Router =
-    new Router(registry, policy, auditSink, limits = IrLlmRoute.llmLimits)
+    new Router(registry, policy, auditSink, limits = llmLimits)
 
   /**
    * P1-2 桥接装载入口（幂等 reindex）：把批 A/B/C 三十件内置 Tool 注册进 IR 命令表

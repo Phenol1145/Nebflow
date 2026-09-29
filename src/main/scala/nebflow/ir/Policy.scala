@@ -66,8 +66,8 @@ object PolicyRule:
   /** 规则条目级键集：未知键 ⇒ 拒（绝不明文放宽）。 */
   private val Keys = Set("name", "decision", "reason", "rule", "tenant", "capKinds")
 
-  /** cap 词表单源 = [[PolicyConfig]] 缺省 `knownCapKinds`（六词）。 */
-  private val CapVocab: Set[String] = PolicyConfig().knownCapKinds
+  /** cap 词表单源 = [[PolicyCapVocab.knownCapKinds]]（六词）。 */
+  private val CapVocab: Set[String] = PolicyCapVocab.knownCapKinds
 
   /** 规则上限（超 ⇒ 整配置拒）。 */
   val MaxRules = 256
@@ -202,6 +202,16 @@ object PolicyRule:
 end PolicyRule
 
 /**
+ * cap 词表单源（零出边叶节点）：引擎认识的六词**唯一定义处**——[[PolicyConfig]] 的缺省
+ * `knownCapKinds` 与 [[PolicyRule]] 的解码词表共用此份（原先由后者经
+ * `PolicyConfig().knownCapKinds` 间接取值，令同文件两个顶层节点互相引用）。本对象只含
+ * 字面量、不引用任何其它节点，故结构上不可能参与环。
+ */
+private[ir] object PolicyCapVocab:
+
+  val knownCapKinds: Set[String] = Set("FsRead", "FsWrite", "Net", "Exec", "Secret", "MemoryWrite")
+
+/**
  * 策略引擎配置（§8.1/§8.2）。
  *
  * `knownCapKinds` 是**引擎认识**的 cap 词表：不认识 ⇒ `Deny`（fail-closed，§8.1）。
@@ -215,7 +225,7 @@ end PolicyRule
  * ⇒ 引擎行为与扩展前逐字节一致（`RealBash` 语义不动）。
  */
 final case class PolicyConfig(
-  knownCapKinds: Set[String] = Set("FsRead", "FsWrite", "Net", "Exec", "Secret", "MemoryWrite"),
+  knownCapKinds: Set[String] = PolicyCapVocab.knownCapKinds,
   rules: List[PolicyRule] = Nil,
   dangerousBash: (String, JsonObject) => Boolean = (_, _) => true,
   /** 与 `dangerousBash` 合成的非 `RealBash` 命令名集（批 C 组合面；默认 ∅ = 不扩）。 */

@@ -14,7 +14,7 @@
  * ingress=llm 策略缺省（绝不 await_approval）：Done ⇒ Executed（isError=exit≠0 契约
  * 新做，IrLlmContract）；AwaitApproval ⇒ AskFallback（回退旧直呼——Router.audit 已
  * 落 decision=ask 审计留痕，回退腿不另造审计面）；Rejected/Invalid/防御性态 ⇒
- * Blocked fail-closed。限额让位：llm 腿走 [[IrGateway.llmInstance]]（llmLimits）。
+ * Blocked fail-closed。限额让位：llm 腿走 [[IrGateway.llmInstance]]（[[IrGateway.llmLimits]]）。
  */
 package nebflow.gateway
 
@@ -22,8 +22,6 @@ import cats.effect.{IO, Ref}
 import io.circe.Json
 import nebflow.ir.*
 import nebflow.shared.{ToolCall, ToolExecResult}
-
-import scala.concurrent.duration.*
 
 private[gateway] final class IrLlmRoute(
   router: Router,
@@ -93,22 +91,6 @@ private[gateway] object IrLlmRoute:
    * （桥表双射 + 注册期 §7.5 uniqueness 负例）。
    */
   val llmNameToIr: Map[String, String] = IrToolCaps.bridged.map(row => row.toolName -> row.irName).toMap
-
-  /**
-   * 限额/超时让位裁定（保守）：llm 视图 IrLimits 放宽 nodeTimeout 与 maxTextBytes，
-   * 使 IR 限额**永不抢跑**既有治理——declaredToolTimeoutMs（工具自报授权时长，可长于
-   * 60s）、BashResilience（后台硬超时 30min 档）、ToolResultGuard（#38 调校过的上下文
-   * 保护单点：50K chars 阈值持久化+预览）。若 IR router.limit.output 先触发，大 Read
-   * 会从「持久化+预览（isError=false）」劣化为「硬错误」——回归，不让发生。IR §5.2
-   * 限额在此阶段边界内让位（openQuestions 留痕，待作者裁定是否收紧为显式策略条目）。
-   */
-  val llmLimits: IrLimits = IrLimits.default.copy(
-    // > BashBackgroundHardTimeoutMs(30min) 且 > 一切合理 declaredToolTimeoutMs 档
-    nodeTimeout = 24.hours,
-    // > ToolResultGuard 阈值（≤50K chars × UTF-8 4B）的任何真实工具产出——旧直呼路径
-    // 本无此限（guard 在闸后无条件运行），llm 腿不引入新失败面
-    maxTextBytes = 2L * 1024 * 1024 * 1024
-  )
 
   /** Executed 腿的富字段合并：isError/content 保持 IR 契约权威，富字段取闭包值优先。 */
   def bypassEnrich(base: ToolExecResult, richOpt: Option[ToolExecResult]): ToolExecResult =
