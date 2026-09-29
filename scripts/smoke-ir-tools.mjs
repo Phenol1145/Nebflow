@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 // smoke-ir-tools.mjs — P1-2 批 A（只读七件）+ 批 B（写面八件）+ 批 C（高能力面十五件）
-// 「内置 Tool → IR 命令桥接」活实例冒烟（2026-09-29）。
+// 「内置 Tool → IR 命令桥接」活实例冒烟（2026-09-29）+ P1-3（LLM ingress 改道）面钉。
 //
-// 验收面（.zcode/plans/command-ir-standard.md §7/§8 + P1-2 批 A/B/C 方案）：
-// dev:tool:* 三十件注册进 IR 命令表、经糖腿/直连 ir 帧真执行；LLM 面不开侧门；
-// dev:tool:* 一律 Ask（auto-all 折 Allow，confirm-edits 成 await_approval）；审计落账；
-// AskUserQuestion 不注册（缺 agentActorRef 槽，缺席优于假门——spec 反向断言钉）。
+// 验收面（.zcode/plans/command-ir-standard.md §7/§8 + P1-2 批 A/B/C 方案 + P1-3 方案）：
+// dev:tool:* 三十件注册进 IR 命令表、经糖腿/直连 ir 帧真执行；P1-3 audiences 翻转后
+// llm 租户直帧过受众面进**策略面**（Ask 把守，与 human 同信任边界——改道闸 IrRoutePort
+// 是 llm 面的派发通道）；dev:tool:* 一律 Ask（auto-all 折 Allow，confirm-edits 成
+// await_approval）；审计落账；AskUserQuestion 不注册（缺 agentActorRef 槽，缺席优于假门
+// ——spec 反向断言钉）。
 //
-// 钉二十件事：
+// 钉二十一件事：
 //   1. 糖腿 /dev:tool:nodelist（typeless，零参）⇒ done / exit=1 / command.failed +
 //      "Missing 'project' parameter"（默认 auto-all 档把 askRule 的 Ask 折 Allow ⇒
 //      真执行到工具内确定性错误——桥接链路真通，非 stub）；
 //   2. 糖腿 /dev:tool:read --file_path <HOME>/auth.json（named 形参，P1-2 全 named 纪律）
 //      ⇒ done / exit=0 / final.text 以 "1\t" 行号形态（真 ReadTool cat -n 输出）；
 //      附：--limit 5（number 属性不进糖）⇒ invalid + router.invalid_args(unknown_flag)；
-//   3. LLM 侧门钉：直连 ir 帧（tenant=llm / ingress=llm）调 dev:tool:read ⇒
-//      status=invalid + router.invalid_args 且 details.reason=audience（§7.4 检查点①）；
+//   3. LLM 面开钉（P1-3，移至腿 4 后跑）：直连 ir 帧（tenant=llm / ingress=llm）调
+//      dev:tool:read ⇒ 过受众面进策略面，绝不回 reason=audience：confirm-edits ⇒
+//      await_approval（rule=bridge:opaque-host、零执行）；auto-all ⇒ done（同 human 腿）；
 //   4. 档位自适应审批腿：直连 ir 帧（human/console）⇒ 回 await_approval（实例被配成
 //      confirm-edits）则取审批体铸凭据重提交 ⇒ done；回 done（默认 auto-all）则 PASS 附注；
 //   5. 审计：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:nodelist 的记录，
@@ -32,8 +35,8 @@
 //      开头（真实 TaskListTool 读腿，存储根 = 实例 dataRoot）；
 //  11. 糖腿 /dev:tool:pop --filePath https://example.com ⇒ done / exit=1 /
 //      command.failed / POP_NEBULA_ONLY（桥模板无身份 ⇒ 身份闸 fail-closed 恒拒、零副作用）；
-//  12. LLM 侧门钉（写面）：tenant=llm / ingress=llm 直连 ir 帧调 dev:tool:write ⇒
-//      invalid / router.invalid_args(reason=audience)（写面桥接同样不开模型面侧门）；
+//  12. LLM 面开钉（写面，P1-3）：tenant=llm / ingress=llm 直连 ir 帧调 dev:tool:write ⇒
+//      策略把守：confirm-edits ⇒ await_approval 且目标文件零落盘；auto-all ⇒ done 且真写；
 //  13. 审计（写面）：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:write 记录，
 //      decision∈{allow,ask}、caps 含 FsWrite(*)、argsDigest 非空、无 args 原文（§8.6）。
 //  ── 批 C（高能力面十五件，14-20）───────────────────────────────────────────
@@ -48,14 +51,20 @@
 //  17. 糖腿 /dev:tool:subtask --prompt smoke --description smoke ⇒ done / exit=1 /
 //      command.failed + "No agent definition available"（身份闸先于副作用，零 spawn；
 //      注：SubTask schema required=[prompt,description]，两键齐传才进到工具）；
-//  18. LLM 侧门钉（高能力面）：tenant=llm / ingress=llm 直连 ir 帧调 dev:tool:bash ⇒
-//      invalid / router.invalid_args(reason=audience)（最危险的件也不开模型面侧门）；
+//  18. LLM 面开钉（高能力面，P1-3）：tenant=llm / ingress=llm 直连 ir 帧调 dev:tool:bash ⇒
+//      策略把守（confirm-edits ⇒ await_approval 零执行；auto-all ⇒ done；绝不 audience 拒）；
 //  19. 审计（高能力面）：<HOME>/logs/ir/<yyyyMMdd>.jsonl 存在 command=dev:tool:bash 记录，
 //      decision∈{allow,ask}、caps 含 Exec 与 FsWrite(*)、argsDigest 非空、无 args 原文
 //      （§8.6——args.command 是敏感原文，digest-only 断言尤重）；
 //  20. dev:fs:* 零扰动复钉（/dev:fs:ls 二跑仍 done/exit=0——批 C 十五件注册不扰旧腿；
 //      批 A/B 既有 13 腿在本脚本同跑即复跑）+ 总计数自检（本脚本执行的检查项总数与
-//      期望值逐项对账——批 C 前基线 16/18（档位两态），批 C 后 22/24）。
+//      期望值逐项对账——P1-3 后基线 23/25（档位两态：固定 13 + 4/9 腿 2|4 + 批 C 7 + 自检 1））。
+// ── P1-3（LLM ingress 改道，19b）────────────────────────────────────────────
+// 19b. 审计（llm 租户）：logs/ir/<yyyyMMdd>.jsonl 存在 ingress=llm 的 dev:tool:read 记录，
+//      tenant="llm:<sess>/smoke"、command=IR 名（dev:tool:read）、无 args 原文（§8.6）。
+//      注：LLM 改道闸本体（executeTool → IrRoutePort）需真实 LLM 轮，活实例冒烟不驱动
+//      模型面——该面的行为钉由 IrLlmGateSpec/IrLlmRouteSpec/IrLlmContractSpec 覆盖；
+//      本脚本对 llm 面只钉「直帧腿策略把守 + 审计留痕」两个活实例可证的事实。
 //
 // Run: NEBFLOW_URL=http://localhost:8099 NEBFLOW_HOME_DIR=/tmp/nebflow-ir-smoke \
 //        node scripts/smoke-ir-tools.mjs
@@ -187,30 +196,7 @@ try {
     );
   }
 
-  // ── 3. LLM 侧门钉：llm ingress 直连 ir 帧 ⇒ audience 拒（§7.4 检查点①）────────
-  {
-    const rid = 'smoke-ir-tools-llm';
-    conn.ws.send(JSON.stringify({
-      type: 'ir',
-      sessionId: SESSION,
-      request: {
-        ir: 1,
-        plan: { call: { name: 'dev:tool:read', args: { file_path: AUTH_JSON } } },
-        tenant: { kind: 'llm', session: SESSION, agent: 'smoke' },
-        ingress: 'llm',
-        sessionId: SESSION,
-        requestId: rid,
-      },
-    }));
-    const r = await waitFor(conn, (m) => m.type === 'irResult' && m.requestId === rid, 15000, 'irResult (llm gate)');
-    const p = r.response || {};
-    check(
-      'llm ingress dev:tool:read → invalid / router.invalid_args(reason=audience) (no LLM side door)',
-      p.status === 'invalid' && p.exit === 2 && p.error?.code === 'router.invalid_args' &&
-        p.error?.details?.reason === 'audience',
-      `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason}`
-    );
-  }
+  // ── 3. LLM 面开钉（P1-3 audiences 翻转）——移至档位判定（腿 4）之后：断言依赖 confirmMode ──
 
   // ── 4. 档位自适应审批腿（await_approval ⇒ 铸凭据重提交；done ⇒ 附注）──────────
   {
@@ -247,6 +233,36 @@ try {
       );
       console.log('NOTE  instance runs auto-all (startup default) — the await_approval leg is covered by IrToolBridgeSpec (ConfirmEdits)');
     }
+  }
+
+  // ── 3(移后). LLM 面开钉（P1-3 audiences 翻转）：llm ingress 直连 ir 帧过受众面进──
+  //    策略面（不再被 reason=audience 拒；改道闸 IrRoutePort 是 llm 面的派发通道，直帧
+  //    腿与 human 同信任边界——策略面把守：confirm-edits ⇒ await_approval，auto-all ⇒ done）
+  {
+    const rid = 'smoke-ir-tools-llm';
+    conn.ws.send(JSON.stringify({
+      type: 'ir',
+      sessionId: SESSION,
+      request: {
+        ir: 1,
+        plan: { call: { name: 'dev:tool:read', args: { file_path: AUTH_JSON } } },
+        tenant: { kind: 'llm', session: SESSION, agent: 'smoke' },
+        ingress: 'llm',
+        sessionId: SESSION,
+        requestId: rid,
+      },
+    }));
+    const r = await waitFor(conn, (m) => m.type === 'irResult' && m.requestId === rid, 15000, 'irResult (llm gate)');
+    const p = r.response || {};
+    const audienceRejected = p.error?.code === 'router.invalid_args' && p.error?.details?.reason === 'audience';
+    check(
+      'llm ingress dev:tool:read → policy face (P1-3 flip): confirm-edits ⇒ await_approval / auto-all ⇒ done, never audience-rejected',
+      !audienceRejected &&
+        (confirmMode
+          ? p.status === 'await_approval' && p.approval?.rule === 'bridge:opaque-host'
+          : p.status === 'done' && p.exit === 0),
+      `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason}`
+    );
   }
 
   // ── 5. 审计一条：<HOME>/logs/ir/<yyyyMMdd>.jsonl（§8.6：digest 在、args 原文不在）──
@@ -376,15 +392,18 @@ try {
     );
   }
 
-  // ── 12. LLM 侧门钉（写面）：llm ingress 直连 ir 帧 ⇒ audience 拒────────────────
+  // ── 12. LLM 面开钉（写面，P1-3）：llm ingress 直连 ir 帧 ⇒ 策略面把守────────────
+  //    （audiences 翻转后不再 audience 拒：confirm-edits ⇒ await_approval 且零写；
+  //     auto-all ⇒ done 且文件真落盘——与 human 腿同信任边界、同策略）
   {
     const rid = 'smoke-ir-tools-llm-write';
+    const LLM_WRITE = join(HOME, 'ir-smoke-llm-write.txt').replace(/\\/g, '/');
     conn.ws.send(JSON.stringify({
       type: 'ir',
       sessionId: SESSION,
       request: {
         ir: 1,
-        plan: { call: { name: 'dev:tool:write', args: { file_path: '/tmp/llm-side-door.txt', content: 'x' } } },
+        plan: { call: { name: 'dev:tool:write', args: { file_path: LLM_WRITE, content: 'llm-smoke' } } },
         tenant: { kind: 'llm', session: SESSION, agent: 'smoke' },
         ingress: 'llm',
         sessionId: SESSION,
@@ -393,11 +412,14 @@ try {
     }));
     const r = await waitFor(conn, (m) => m.type === 'irResult' && m.requestId === rid, 15000, 'irResult (llm write gate)');
     const p = r.response || {};
+    const audienceRejected = p.error?.code === 'router.invalid_args' && p.error?.details?.reason === 'audience';
     check(
-      'llm ingress dev:tool:write → invalid / router.invalid_args(reason=audience) (no LLM side door)',
-      p.status === 'invalid' && p.exit === 2 && p.error?.code === 'router.invalid_args' &&
-        p.error?.details?.reason === 'audience',
-      `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason}`
+      'llm ingress dev:tool:write → policy face (P1-3 flip): confirm-edits ⇒ await_approval+zero write / auto-all ⇒ done+real write',
+      !audienceRejected &&
+        (confirmMode
+          ? p.status === 'await_approval' && !existsSync(LLM_WRITE)
+          : p.status === 'done' && p.exit === 0 && existsSync(LLM_WRITE)),
+      `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason} file=${existsSync(LLM_WRITE)}`
     );
   }
 
@@ -481,7 +503,7 @@ try {
     );
   }
 
-  // ── 18. LLM 侧门钉（高能力面）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ audience 拒──
+  // ── 18. LLM 面开钉（高能力面，P1-3）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ 策略把守──
   {
     const rid = 'smoke-ir-tools-llm-bash';
     conn.ws.send(JSON.stringify({
@@ -498,10 +520,13 @@ try {
     }));
     const r = await waitFor(conn, (m) => m.type === 'irResult' && m.requestId === rid, 15000, 'irResult (llm bash gate)');
     const p = r.response || {};
+    const audienceRejected = p.error?.code === 'router.invalid_args' && p.error?.details?.reason === 'audience';
     check(
-      'llm ingress dev:tool:bash → invalid / router.invalid_args(reason=audience) (no LLM side door)',
-      p.status === 'invalid' && p.exit === 2 && p.error?.code === 'router.invalid_args' &&
-        p.error?.details?.reason === 'audience',
+      'llm ingress dev:tool:bash → policy face (P1-3 flip): confirm-edits ⇒ await_approval / auto-all ⇒ done, never audience-rejected',
+      !audienceRejected &&
+        (confirmMode
+          ? p.status === 'await_approval'
+          : p.status === 'done' && p.exit === 0),
       `status=${p.status} code=${p.error?.code} reason=${p.error?.details?.reason}`
     );
   }
@@ -531,15 +556,40 @@ try {
     );
   }
 
+  // ── 19b. 审计（P1-3）：llm 租户直帧腿的记录 tenant=llm:<sess>/<agent>、ingress=llm ──
+  {
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const auditPath = join(HOME, 'logs', 'ir', `${day}.jsonl`);
+    let rec = null;
+    if (existsSync(auditPath)) {
+      const lines = readFileSync(auditPath, 'utf8').split('\n').filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const j = JSON.parse(line);
+          if (j.command === 'dev:tool:read' && j.ingress === 'llm') rec = j;
+        } catch { /* skip partial line */
+        }
+      }
+    }
+    check(
+      `audit ${day}.jsonl: llm-tenant dev:tool:read record with tenant=llm:${SESSION}/smoke, ingress=llm, command=IR name`,
+      rec !== null && rec.tenant === `llm:${SESSION}/smoke` && rec.ingress === 'llm' &&
+        rec.command === 'dev:tool:read' && ['allow', 'ask'].includes(rec.decision) &&
+        !('args' in rec),
+      rec ? `tenant=${rec.tenant} decision=${rec.decision}` : `no record in ${auditPath}`
+    );
+  }
+
   // ── 20. dev:fs:* 零扰动复钉（批 C 十五件注册不扰旧腿）+ 总计数自检 ───────────────
   {
     const p = await submitDirect(conn, { call: { name: 'dev:fs:ls', args: {} } }, 'smoke-ir-tools-fs-batchc');
     check('dev:fs:ls unchanged after batch C registration → done / exit=0 (askRule scopes to dev:tool:* only)',
       p.status === 'done' && p.exit === 0,
       `status=${p.status} exit=${p.exit}`);
-    // 总计数自检：固定腿 12（1,2,2b,3,5,6,7,8,10,11,12,13）+ 档位两态腿 4/9（auto-all
-    // 各 1、confirm-edits 各 2）+ 批 C 七腿（14-20）+ 本自检 1
-    const expected = 12 + (confirmMode ? 4 : 2) + 7 + 1;
+    // 总计数自检：固定腿 13（1,2,2b,3,5,6,7,8,10,11,12,13,19b）+ 档位两态腿 4/9
+    // （auto-all 各 1、confirm-edits 各 2）+ 批 C 七腿（14-20）+ 本自检 1。
+    // P1-3：腿 3/12/18 仍各恰一条 check（断言按档位两态分叉），新增 19b 一条。
+    const expected = 13 + (confirmMode ? 4 : 2) + 7 + 1;
     check(`self-count: executed checks (${executed + 1}) === expected (${expected}, mode=${confirmMode ? 'confirm-edits' : 'auto-all'})`,
       executed + 1 === expected,
       `executed=${executed} expected=${expected}`);

@@ -7,7 +7,8 @@
  *
  * 本文件只声明**手工裁定**的部分：IR 名、caps、Ask 策略规则。其余描述符字段由
  * `IrToolBridge` 从工具定义**机械装配**（argsSchema/params 取 augmentSchema 后的
- * inputSchema，pathArgs 恒空，audiences={Human}，llmName=旧 Tool 名——§7.5 迁移期锚）。
+ * inputSchema，pathArgs 恒空，P1-3 起 audiences={Human,Llm}，llmName=旧 Tool 名——
+ * §7.5 迁移期锚，见 [[audiences]] 行内注）。
  *
  * caps 纪律（§8.1「声明替代静态分析」，全批无既有元数据可继承，逐件手工声明）：
  *  - 文件面工具的绝对路径语义（如 `ReadTool` 的 `file_path`）与 VFS canon
@@ -279,9 +280,21 @@ object IrToolCaps:
   /** 全批共用管道契约：不吃 stdin、产出 text（J6：适配器只产 `StreamValue.Text`）。 */
   val io: CommandIo = CommandIo(stdin = None, stdout = StreamKind.Text)
 
-  /** 三十件统一由桥装配的字段（specs 的表驱动断言面，见 `IrToolBridge.toCommandDef`）。 */
   val pathArgs: Set[String] = Set.empty
-  val audiences: Set[Audience] = Set(Audience.Human)
+
+  /**
+   * 三十件统一由桥装配的字段（specs 的表驱动断言面，见 `IrToolBridge.toCommandDef`）。
+   *
+   * P1-3（audiences 翻转）：{Human} → {Human, Llm}——不翻则 `checkAudience`（两处
+   * 检查点，C21/C25）把每个 llm ingress 对 `dev:tool:*` 的调用拒掉，整个改道死胎。
+   * 翻转激活 §7.5 注册期校验（Llm∈audiences ⇒ llmName 必填且全局唯一，
+   * `Registry.validateLlmName`）——桥接 def 已带 `llmName=Some(toolName)`。模型工具表
+   * 从 TOOL_MAP 喂给（桥只读）⇒ 表逐字节不动。本翻转是 P1-3 的**代码常量**，不受
+   * `ir.llmIngress` 开关翻转（D30 约束的是开关不改注册面，不是描述符不能演进）；
+   * ws 直连 ir 帧的 llm 租户与 human 同信任边界（gateway 仅 token 级 auth）——
+   * 是否显式拒待作者裁定（openQuestions 留痕，默认不拒）。
+   */
+  val audiences: Set[Audience] = Set(Audience.Human, Audience.Llm)
   val trust: Trust = Trust.Builtin
 
   /**

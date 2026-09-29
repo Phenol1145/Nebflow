@@ -5,8 +5,11 @@
  * 单键空间纪律（§7.5 并存期铁律）：本桥**只读** `ToolRegistry.TOOL_MAP` 查实例，
  * 零 `registerTool`/`unregisterTool` 调用——`dev:tool:*` 名只存在于 IR 侧
  * `CommandRegistry`，LLM 面工具表（`buildToolList`/`buildAllowedToolSet`/ALL_TOOLS）
- * 逐字节不变；`audiences={Human}` ⇒ LLM/script ingress 在 §7.4 检查点①
- * （`PolicyEngine.checkAudience`）被拒——桥不打开模型面侧门。
+ * 逐字节不变。P1-3（audiences 翻转）：`audiences={Human,Llm}` + `llmName=旧 Tool 名`
+ * ——llm ingress 经 `executeTool` 第三前置改道闸（`IrRoutePort`）派发进 IR，
+ * §7.4 检查点①对**改道腿**放行；模型面工具名与工具表零扰动（D30：开关只改派发面）。
+ * 执行腿双形态：fiber-local 置位（llm 改道腿）⇒ 活闭包（见 [[llmExecLocal]]）；未置位
+ * （人侧糖腿/ws 直连 ir 帧）⇒ 静态模板逐字节不变。
  *
  * 四面适配（`DevHandler = (JsonObject, CallCtx) => IO[Either[IrError, StreamValue]]`）：
  *  ① 参数键透传：args 原样交 `tool.call(input=args)`——键面 = 工具自己的
@@ -40,7 +43,8 @@
  */
 package nebflow.gateway
 
-import cats.effect.IO
+import cats.effect.unsafe.implicits.global
+import cats.effect.{IO, IOLocal}
 import io.circe.{Json, JsonObject}
 import nebflow.core.AgentRuntimePort
 import nebflow.core.AgentLibraryView
@@ -52,6 +56,21 @@ import nebflow.shared.NebflowLogger
 object IrToolBridge:
 
   private val logger = NebflowLogger.forName("nebflow.ir.bridge")
+
+  /**
+   * P1-3（LLM ingress 改道）：llm 腿的 fiber-local **活闭包靶**。置位 ⇒ handler 不走
+   * 静态模板，改调 [[IrExec.run]]（= 调用方 executeTool 闭包，内含 hook/沙箱/快照/
+   * wsSend/modelFacingResult/extractImages 全部旧引擎纵深）；未置位（人侧糖腿 / ws
+   * 直连 ir 帧）⇒ 静态模板逐字节不变。`IOLocal`：CE3 fiber 作用域（先例
+   * `agent/SendConfirm.scala:93-94`）——route→submit→handler 同 fiber，parTraverse 对
+   * 每元素 fork 各持一份，并发零串台；`locally` 用 getAndSet+bracket 保证异常路径还原。
+   */
+  private val llmExecLocal: IOLocal[Option[IrExec]] =
+    IOLocal[Option[IrExec]](None).unsafeRunSync()
+
+  /** llm 腿置靶唯一入口：本次 submit 期间挂活闭包（退出即还原上一值，可嵌套）。 */
+  private[gateway] def llmLocally[A](exec: IrExec)(io: IO[A]): IO[A] =
+    llmExecLocal.getAndSet(Some(exec)).bracket(_ => io)(prev => llmExecLocal.set(prev).void)
 
   /** 糖可用形参名：`--<key>` 的 key 必须是合法 flag 名（首字符字母）——排除 `-i`/`-A` 这类 dash 属性。 */
   private val FlagNameRe = "^[A-Za-z][A-Za-z0-9_-]*$".r
@@ -171,24 +190,39 @@ object IrToolBridge:
    * 批 C 补两槽：`taskStore=Some(FileTaskStore)`（进程级单例，生产 ToolContext 同源
    * `GatewayMain.startMcpServers` 的 sharedResources 装配）与 `agentLibrary=lib`
    * （`initBridge` 注入；None ⇒ Delegate 确定性拒 "No agent library available"）。
+   *
+   * P1-3 fiber-local 分支：`llmExecLocal` 置位（llm 改道腿，经 [[llmLocally]]）⇒ **活
+   * 闭包**执行——`exec.run()` 即调用方的 executeToolInner，结果映射 isError⇒
+   * `Left(commandFailed(content))` / else⇒ `Right(Text(content))`（content=闭包模型面
+   * 串原样，保证 IR 契约面的 content 与闭包模型面串字节相等）；未置位 ⇒ 静态模板
+   * 逐字节不变（人侧糖腿 / ws 直连 ir 腿）。静态模板不可作 LLM 面默认腿出货
+   * （sandbox=off/无 hook/无快照——承重论证见 P1-3 方案第 7 条）。
    */
   private def handler(tool: Tool, sr: Option[AgentRuntimePort], lib: Option[AgentLibraryView]): DevHandler =
     (args, callCtx) =>
-      val ctx = ToolContext(
-        projectRoot = "",
-        sharedResources = sr,
-        actorSystem = sr.map(_.actorSystem),
-        taskStore = Some(FileTaskStore),
-        agentLibrary = lib
-      ).copy(sessionId = Some(callCtx.sessionId), requestId = Some(callCtx.requestId))
-      tool
-        .call(args, ctx)
-        .map {
-          case Right(out) => Right(StreamValue.Text(out)): Either[IrError, StreamValue]
-          case Left(err) => Left(IrError.commandFailed(err.message)): Either[IrError, StreamValue]
-        }
-        .handleErrorWith(e =>
-          IO.pure(Left(IrError.commandFailed(s"${tool.name}: ${Option(e.getMessage).getOrElse(e.toString)}")))
-        )
+      llmExecLocal.get.flatMap {
+        case Some(exec) =>
+          exec.run().map { r =>
+            if r.isError then Left(IrError.commandFailed(r.content)): Either[IrError, StreamValue]
+            else Right(StreamValue.Text(r.content)): Either[IrError, StreamValue]
+          }
+        case None =>
+          val ctx = ToolContext(
+            projectRoot = "",
+            sharedResources = sr,
+            actorSystem = sr.map(_.actorSystem),
+            taskStore = Some(FileTaskStore),
+            agentLibrary = lib
+          ).copy(sessionId = Some(callCtx.sessionId), requestId = Some(callCtx.requestId))
+          tool
+            .call(args, ctx)
+            .map {
+              case Right(out) => Right(StreamValue.Text(out)): Either[IrError, StreamValue]
+              case Left(err) => Left(IrError.commandFailed(err.message)): Either[IrError, StreamValue]
+            }
+            .handleErrorWith(e =>
+              IO.pure(Left(IrError.commandFailed(s"${tool.name}: ${Option(e.getMessage).getOrElse(e.toString)}")))
+            )
+      }
 
 end IrToolBridge

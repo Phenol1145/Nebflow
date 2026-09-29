@@ -271,7 +271,15 @@ case class NebflowServiceConfig(
    * ⇒ 保持默认关）。None（既有安装无落盘值）与 `{"enabled":false}` 行为等价；
    * 仅用户显式开/关（WS `setLlmLog`）才写入本键。
    */
-  llmLog: Option[io.circe.Json] = None
+  llmLog: Option[io.circe.Json] = None,
+  /**
+   * 命令 IR 路由层（P1-3，2026-09-29）：顶层 `ir` 节原样 JSON——目前唯一键
+   * `llmIngress`（bool，缺省 false=off）：LLM 工具调用改道闸
+   * （`executeTool` 第三前置改道 → `SharedResources.irRoute`）的总开关。
+   * `IrLlmRoute.llmIngressEnabled` fail-safe 解析（缺失 / 非法 ⇒ 关）。
+   * 开关只改**派发面**（D30）——注册面与模型工具表不受影响。
+   */
+  ir: Option[io.circe.Json] = None
 )
 
 object NebflowServiceConfig:

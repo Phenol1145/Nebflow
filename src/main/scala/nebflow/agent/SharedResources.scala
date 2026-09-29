@@ -171,7 +171,15 @@ case class SharedResources(
    * **禁**读本 Ref（口径③；静态判据见
    * `.nebflow/tools/20260915_ctxthresh_leak-check.sh`）。
    */
-  sessionCompactThreshold: Ref[IO, Map[String, Double]] = Ref.unsafe[IO, Map[String, Double]](Map.empty)
+  sessionCompactThreshold: Ref[IO, Map[String, Double]] = Ref.unsafe[IO, Map[String, Double]](Map.empty),
+  /**
+   * P1-3（LLM ingress 改道端口）：`None` = off（缺省——与 hookEngine=noop /
+   * hotRestart=None 同形族，存量测试构造零改动）⇒ executeTool 逐字旧路径；
+   * `Some(IrLlmRoute)`（GatewayMain 读 `nebflow.json` 的 `ir.llmIngress` 装配，
+   * 缺省 false=保守关）⇒ executeTool 第三前置改道闸生效。开关只改派发面
+   * （[D30]），注册面/模型工具表不受影响。
+   */
+  irRoute: Option[nebflow.ir.IrRoutePort] = None
 ) extends AgentRuntimePort,
       SubAgentTaskPort:
 

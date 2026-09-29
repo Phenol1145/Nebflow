@@ -590,7 +590,19 @@ object GatewayMain extends IOApp:
                                       healthCheckIntervalSec = config.bashHealthCheckIntervalSec
                                         .getOrElse(nebflow.shared.Defaults.BgHealthCheckIntervalSec)
                                     ),
-                                    sandboxConfig = sandboxCfg
+                                    sandboxConfig = sandboxCfg,
+                                    // P1-3（LLM ingress 改道闸装配）：读 nebflow.json
+                                    // 顶层 ir 节的 llmIngress（缺省 false=off——保守
+                                    // 缺省，fail-safe 关）。off ⇒ irRoute=None ⇒
+                                    // executeTool 逐字旧路径；on ⇒ 注入 gateway 活实现
+                                    // （IrLlmRoute：llmName 查表 + Tenant.Llm 信封 +
+                                    // 根/档位单点 + 限额让位 Router）。时序安全：
+                                    // initBridge（startMcpServers 内）之前 route 查
+                                    // registry 空表 ⇒ miss ⇒ 旧路径（fail-open）。
+                                    irRoute =
+                                      if IrLlmRoute.llmIngressEnabled(config.ir) then
+                                        Some(IrLlmRoute.forGateway(sessionStore))
+                                      else None
                                   )
                                   // P2: spawn the global InteractionHub and publish its ref.
                                   // Every agent's permission/AskUser requests and every frontend

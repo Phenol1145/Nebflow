@@ -312,6 +312,25 @@ class IrExecSpec extends CatsEffectSuite:
       }
     }
 
+  test("C34 扩展（P1-3）：llm ingress 提交含桥接件名（dev:tool:*）的 Pipe/Sequence 计划 ⇒ 同样拒绝——llmPlanCheck 面覆盖桥接件"):
+    IrTestKit.vfs().flatMap { root =>
+      IrTestKit.harness(root).flatMap { h =>
+        // 命令名取自桥接表（真实 dev:tool:* 面）；llmPlanCheck 先于节点收集 ⇒ 无需注册即拒
+        val pipe = Ir.Pipe(List(IrTestKit.call("dev:tool:read"), IrTestKit.call("dev:tool:grep")))
+        val seq = Ir.Sequence(List(IrTestKit.call("dev:tool:write"), IrTestKit.call("dev:tool:bash")))
+        for
+          r1 <- run(h, pipe, tenant = Tenant.Llm("sess", "Nebula"), ingress = Ingress.Llm)
+          r2 <- run(h, seq, tenant = Tenant.Llm("sess", "Nebula"), ingress = Ingress.Llm)
+        yield
+          assertEquals(r1.status, Status.Invalid)
+          assertEquals(r1.error.flatMap(_.details("reason").flatMap(_.asString)), Some("llm_plan_forbidden"))
+          assertEquals(r1.results, Nil)
+          assertEquals(r2.status, Status.Invalid)
+          assertEquals(r2.error.flatMap(_.details("reason").flatMap(_.asString)), Some("llm_plan_forbidden"))
+          assertEquals(r2.results, Nil)
+      }
+    }
+
   test("§4.6 软链接/重解析点：根内别名指向根内 ⇒ 放行（按真实落点判定）；指向根外 ⇒ 计划非法"):
     IrTestKit.vfs("real.txt" -> "A").flatMap { root =>
       val outside = os.temp.dir(prefix = "nebflow-ir-outside-")

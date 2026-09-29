@@ -175,6 +175,12 @@ class ToolsLogAgentCoreSpec extends FunSuite:
     val routerDir = tmpDir("nb-toolslog-router-")
     ToolsLogWriter.setDirForTest(toolsDir)
     LlmLogWriter.setLogDirForTest(routerDir)
+    // 2026-09-13「只改默认值」批后 LlmLogWriter 缺省为关（logRequest/logResponse
+    // 门控短路、一行不写）——本用例的 fixture 语义是「真实 LlmLogWriter 写 router
+    // summary」，须显式开门（setEnabled+还原原值的既有 spec 先例 =
+    // AgentActorCompactionSpec）；finally 还原，不污染同 JVM 的后续套件。
+    val prevLlmLogEnabled = LlmLogWriter.isEnabled
+    LlmLogWriter.setEnabled(true)
     val alignId = "req-align-toolslog-42"
     try
       os.write(root / "f.txt", "align me")
@@ -235,6 +241,7 @@ class ToolsLogAgentCoreSpec extends FunSuite:
         assertEquals(j.hcursor.get[Option[String]]("requestId").toOption, Some(None), "null when not LLM-triggered")
       }
     finally
+      LlmLogWriter.setEnabled(prevLlmLogEnabled)
       os.remove.all(root)
       os.remove.all(os.Path(toolsDir))
       os.remove.all(os.Path(routerDir))

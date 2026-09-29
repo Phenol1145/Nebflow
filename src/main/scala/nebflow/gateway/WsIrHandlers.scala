@@ -57,6 +57,16 @@ private[gateway] object IrGateway:
   def instance: Router = router
 
   /**
+   * P1-3（LLM ingress 改道）llm 腿专用 Router：同 registry/policy/audit（审计单点不
+   * 分叉），唯限额取 [[nebflow.gateway.IrLlmRoute.llmLimits]]（让位裁定：nodeTimeout/
+   * maxTextBytes 放宽，使 IR 限额永不抢跑 declaredToolTimeoutMs/BashResilience/
+   * ToolResultGuard——大 Read 不因 IR 抢跑从「持久化+预览」劣化为硬错误）。人侧糖腿/
+   * 直连 ir 帧继续走 [[instance]]（默认限额，行为零变化）。
+   */
+  private[gateway] lazy val llmInstance: Router =
+    new Router(registry, policy, auditSink, limits = IrLlmRoute.llmLimits)
+
+  /**
    * P1-2 桥接装载入口（幂等 reindex）：把批 A/B/C 三十件内置 Tool 注册进 IR 命令表
    * （[[IrToolBridge.reindex]]：先摘后挂，单件失败记 ERROR 跳过）。`lib`（批 C） =
    * AgentLibrary 视图，注入 ToolContext 模板的 `agentLibrary` 槽（Delegate 真实
@@ -89,6 +99,44 @@ private[gateway] object IrGateway:
       }.handleErrorWith(e => logger.warn(s"ir audit append failed: ${e.getMessage}"))
 
 end IrGateway
+
+/**
+ * `core.SafetyMode` → `ir.Safety` 的 gateway 单点（[D24] 唯一映射；两套枚举同 wire 值域）。
+ * P1-3 从 WsIrHandlers 的 private def 上移：人侧糖腿与 llm 改道腿（IrLlmRoute）共用
+ * 一份映射，消灭复制。
+ */
+private[gateway] object IrSafety:
+
+  def of(mode: nebflow.core.SafetyMode): Safety = mode match
+    case nebflow.core.SafetyMode.ConfirmEdits => Safety.ConfirmEdits
+    case nebflow.core.SafetyMode.AutoEdits => Safety.AutoEdits
+    case nebflow.core.SafetyMode.AutoAll => Safety.AutoAll
+
+end IrSafety
+
+/**
+ * 会话 explorer 根解析的 gateway 单点（[D20]：禁各处自行拼接）。
+ * P1-3 从 WebSocketRoutes 的 private def 上移（函数体逐字迁移）：explorer-rt 腿
+ * （WebSocketRoutes）、人侧糖腿/直连 ir 帧（WsIrHandlers 经 WsDispatchCtx 注入的
+ * impl 最终同源）与 llm 改道腿（IrLlmRoute）共用一份。
+ */
+private[gateway] object ExplorerRoots:
+
+  def resolve(
+    sessionStore: nebflow.core.SessionStore,
+    sessionId: String,
+    overrideRoot: Option[String]
+  ): IO[String] =
+    overrideRoot match
+      case Some(root) => IO.pure(root)
+      case None =>
+        for
+          metaOpt <- sessionStore.getSessionMeta(sessionId)
+          folderId = metaOpt.flatMap(_.folderId)
+          prOpt <- sessionStore.resolveProjectRoot(folderId)
+        yield prOpt.getOrElse((PathUtil.dataRoot / "projects").toString)
+
+end ExplorerRoots
 
 /** 系统域扩展：`ir` 帧 —— 命令 IR 路由层的人侧入口（P0 直帧，P1 接人侧 argv 糖）。 */
 private[gateway] object WsIrHandlers:
@@ -187,7 +235,7 @@ private[gateway] object WsIrHandlers:
             // 身份——openQuestions 待作者裁定）、ingress=human、requestId=UUID
             IrRequest(call, Tenant.Human("console"), Ingress.Human, sessionId, requestId),
             VfsRoot(os.Path(rootStr, os.pwd)),
-            irSafety(safety)
+            IrSafety.of(safety)
           )
           _ <- sendResult(result)
         yield ()
@@ -232,7 +280,7 @@ private[gateway] object WsIrHandlers:
       for
         rootStr <- resolveExplorerBaseRoot(sessionId, None)
         safety <- sharedResources.effectiveSafetyMode
-        result <- IrGateway.instance.submit(prepared, VfsRoot(os.Path(rootStr, os.pwd)), irSafety(safety))
+        result <- IrGateway.instance.submit(prepared, VfsRoot(os.Path(rootStr, os.pwd)), IrSafety.of(safety))
         _ <- wsSend(
           Json.obj(
             "type" -> "irResult".asJson,
@@ -243,11 +291,5 @@ private[gateway] object WsIrHandlers:
       yield ()
     end if
   end handleIr
-
-  /** `core.SafetyMode` → `ir.Safety`（唯一映射单点；两套枚举同 wire 值域，[D24]）。 */
-  private def irSafety(mode: nebflow.core.SafetyMode): Safety = mode match
-    case nebflow.core.SafetyMode.ConfirmEdits => Safety.ConfirmEdits
-    case nebflow.core.SafetyMode.AutoEdits => Safety.AutoEdits
-    case nebflow.core.SafetyMode.AutoAll => Safety.AutoAll
 
 end WsIrHandlers

@@ -14,8 +14,9 @@ import nebflow.shared.PathUtil
  * 未注册件反向断言（AskUserQuestion）** / 单键空间不越界 / 逐件精确 caps 集 / 机械
  * params 纪律 / 注册与幂等 reindex）+ 真实经 IR 执行（Read 真文件 / **写面正负两腿** /
  * tasklist 隔离根 / **批 C：bash 真执行 + teamtasklist 真读 + dangerousBash 组合
- * Ask 两腿** / 确定性负测组）+ LLM 可见面钉（§7.4 检查点①：桥不开模型面侧门，扩到
- * dev:tool:bash）。
+ * Ask 两腿** / 确定性负测组）+ LLM 面开钉（P1-3 audiences 翻转后：llm ingress 直连
+ * ir 帧过受众面进策略面，ConfirmEdits 下 askRule 把守——await_approval/零执行，
+ * 批 A/B/C 三面各一钉）。
  *
  * 批 B 写面核心验证点（缺一不可）：
  *  - 正腿：显式 Allow 规则（`dev:tool:write` 精确名）+ Safety.ConfirmEdits ⇒ 真写
@@ -263,11 +264,13 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       assert(cmd.capKinds.forall(known.contains), s"cap kinds of ${cmd.name} must be known to the engine")
     }
 
-  test("表驱动·pathArgs/io/audiences/llmName：三十件统一（pathArgs=∅、io=Text、Human、llmName=旧名）"):
+  test("表驱动·pathArgs/io/audiences/llmName：三十件统一（pathArgs=∅、io=Text、{Human,Llm}、llmName=旧名）"):
     defs.foreach { cmd =>
       assertEquals(cmd.pathArgs, Set.empty[String], s"pathArgs of ${cmd.name}")
       assertEquals(cmd.io, CommandIo(stdin = None, stdout = StreamKind.Text), s"io of ${cmd.name}")
-      assertEquals(cmd.audiences, Set(Audience.Human), s"audiences of ${cmd.name}")
+      // P1-3（audiences 翻转）：{Human} → {Human,Llm}——不翻则 llm ingress 对 dev:tool:*
+      // 被 C21 拒、改道死胎；激活 §7.5 llmName 必填+全局唯一注册期校验（桥已带旧名）
+      assertEquals(cmd.audiences, Set(Audience.Human, Audience.Llm), s"audiences of ${cmd.name}")
       assertEquals(
         cmd.llmName,
         IrToolCaps.bridged.find(_.irName == cmd.name).map(_.toolName),
@@ -640,32 +643,38 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       }
     }
 
-  test("LLM 可见面钉：llm ingress 直连 ir 帧调 dev:tool:read ⇒ invalid + router.invalid_args(reason=audience)（桥未开 LLM 侧门）"):
+  test(
+    "LLM 面开钉（P1-3 audiences 翻转）：llm ingress 直连 ir 帧调 dev:tool:read ⇒ 过受众面进策略面，ConfirmEdits 下 await_approval（rule=bridge:opaque-host、零执行）"
+  ):
     IrTestKit.vfs().flatMap { root =>
       bridgedHarness(root).flatMap { h =>
         val plan = Ir.Call("dev:tool:read", JsonObject("file_path" -> "/etc/hosts".asJson))
-        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm).map { r =>
-          assertEquals(r.status, Status.Invalid)
-          assertEquals(r.exit, Some(2))
-          assertEquals(r.error.map(_.code), Some(Codes.InvalidArgs))
-          assertEquals(r.error.flatMap(_.details("reason")).flatMap(_.asString), Some("audience"))
-        }
+        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm, safety = Safety.ConfirmEdits)
+          .map { r =>
+            assertEquals(r.status, Status.AwaitApproval)
+            assertEquals(r.exit, None)
+            assertEquals(r.results, Nil) // 零执行
+            val ap = r.approval.getOrElse(fail("approval body missing"))
+            assertEquals(ap.nodes.map(_.command), List("dev:tool:read"))
+            assertEquals(ap.rule, "bridge:opaque-host")
+          }
       }
     }
 
-  test("LLM 可见面钉（批 B 写面）：llm ingress 直连 ir 帧调 dev:tool:write ⇒ invalid + router.invalid_args(reason=audience)"):
+  test("LLM 面开钉（写面，P1-3）：llm ingress 直连 ir 帧调 dev:tool:write ⇒ 策略 Ask 把守（await_approval、零执行）"):
     IrTestKit.vfs().flatMap { root =>
       bridgedHarness(root).flatMap { h =>
         val plan = Ir.Call(
           "dev:tool:write",
           JsonObject("file_path" -> "/tmp/llm-side-door.txt".asJson, "content" -> "x".asJson)
         )
-        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm).map { r =>
-          assertEquals(r.status, Status.Invalid)
-          assertEquals(r.exit, Some(2))
-          assertEquals(r.error.map(_.code), Some(Codes.InvalidArgs))
-          assertEquals(r.error.flatMap(_.details("reason")).flatMap(_.asString), Some("audience"))
-        }
+        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm, safety = Safety.ConfirmEdits)
+          .map { r =>
+            assertEquals(r.status, Status.AwaitApproval)
+            assertEquals(r.results, Nil)
+            assertEquals(r.approval.map(_.rule), Some("bridge:opaque-host"))
+            assertEquals(os.exists(os.Path("/tmp/llm-side-door.txt", os.pwd)), false)
+          }
       }
     }
 
@@ -854,16 +863,16 @@ class IrToolBridgeSpec extends CatsEffectSuite:
       }
     }
 
-  test("LLM 可见面钉（批 C 高能力面）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ invalid + router.invalid_args(reason=audience)"):
+  test("LLM 面开钉（批 C 高能力面，P1-3）：llm ingress 直连 ir 帧调 dev:tool:bash ⇒ 策略 Ask 把守（await_approval、零执行）"):
     IrTestKit.vfs().flatMap { root =>
       bridgedHarness(root).flatMap { h =>
         val plan = Ir.Call(IrToolCaps.bashIrName, JsonObject("command" -> "echo side-door".asJson))
-        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm).map { r =>
-          assertEquals(r.status, Status.Invalid)
-          assertEquals(r.exit, Some(2))
-          assertEquals(r.error.map(_.code), Some(Codes.InvalidArgs))
-          assertEquals(r.error.flatMap(_.details("reason")).flatMap(_.asString), Some("audience"))
-        }
+        run(h, plan, tenant = Tenant.Llm("sess-1", "agent-a"), ingress = Ingress.Llm, safety = Safety.ConfirmEdits)
+          .map { r =>
+            assertEquals(r.status, Status.AwaitApproval)
+            assertEquals(r.results, Nil) // 最危险的件同样零执行（Ask 先于一切副作用）
+            assertEquals(r.approval.map(_.rule), Some("bridge:opaque-host"))
+          }
       }
     }
 

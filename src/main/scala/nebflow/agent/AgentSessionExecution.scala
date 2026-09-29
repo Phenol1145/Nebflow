@@ -13,6 +13,7 @@ import nebflow.core.compact.*
 import nebflow.core.hooks.*
 import nebflow.core.project.{NodeRoles, ProjectRuntimeRegistry}
 import nebflow.core.tools.*
+import nebflow.ir.{IrExec, IrRouteLeg}
 import nebflow.llm.{Fallback, TurnBudgetExceeded}
 import nebflow.shared.given
 import nebflow.shared.{NebflowLogger, *}
@@ -1797,7 +1798,35 @@ private[agent] trait AgentSessionExecution extends AgentRegistryEmit with AgentS
           val r = ToolExecResult(msg, isError = true)
           logToolStructured(call, ctx, r).as(r)
         case None =>
-          executeToolInner(call, ctx)
+          // P1-3（LLM ingress 改道闸）：第三前置改道，与上面 kimi echo / 畸形参数两腿
+          // 同构，顺序钉死 kimi→malformed→IR→inner（畸形 rawArguments 报错优先于 IR
+          // schema 报错——后者会遮蔽更精确的 JSON 修复信息）。闸只挂在旧
+          // permissionDecision 已放行之后（三处 executeTool 调用点 :1205/:1528/:1666
+          // 全在旧面肯定决定之后）⇒ IR 只收紧不放宽；irRoute=None（缺省 off）或查表
+          // 未中 ⇒ executeToolInner 逐字直行。模型面 call.name 全程保持 llmName——
+          // ToolStart/ToolEnd/ToolResultGuard/LoopGuard/ContentBlock.ToolUse 全拿原名，
+          // IR 名只存在于 IR 信封与审计 command 字段。
+          ctx.sharedResources.flatMap(_.irRoute) match
+            case Some(port) =>
+              val irExec: IrExec = () => executeToolInner(call, ctx)
+              val requestId = ctx.requestId.filter(_.nonEmpty).getOrElse(s"llm-${call.id}")
+              val agentName = ctx.agentDef.map(_.name).getOrElse("unknown")
+              port.route(call, ctx.sessionId.getOrElse(""), requestId, agentName, irExec) match
+                case Some(legIO) =>
+                  legIO.flatMap {
+                    // Executed：闭包内已 logToolStructured，不重复记录
+                    case IrRouteLeg.Executed(result) => IO.pure(result)
+                    // AskFallback：绝不 await_approval（§8.4 步 5b 对 LLM 租户不实现——
+                    // 会卡死轮次）；Router 未触 handler ⇒ 回退恰执行一次
+                    case IrRouteLeg.AskFallback => irExec.run()
+                    // Blocked：Deny 硬底零执行零回退 / Invalid 校验不跳过；补结构化
+                    // 日志对齐 kimi(:1179)/malformed(:1798) 先例
+                    case IrRouteLeg.Blocked(result) => logToolStructured(call, ctx, result).as(result)
+                  }
+                case None => executeToolInner(call, ctx)
+            case None => executeToolInner(call, ctx)
+          end match
+      end match
 
   private def executeToolInner(call: ToolCall, ctx: ToolContext): IO[ToolExecResult] =
     ToolRegistry.TOOL_MAP.get(call.name) match

@@ -80,6 +80,14 @@ trait AgentRuntimePort extends AgentRegistryPort:
   def interactionHubRef: Ref[IO, Option[ActorRef[InteractionHubCommand]]]
 
   /**
+   * 镜像 `SharedResources.irRoute`(P1-3,LLM ingress 改道端口):None=off(缺省,与
+   * hookEngine=noop/hotRestart=None 同形族)⇒ 引擎逐字旧路径;Some ⇒ executeTool 的
+   * 第三前置改道闸可咨询。core→ir 是向下边(nebflow.ir 层位在本包之下),签名零
+   * agent/gateway 符号。实现 = gateway 装配(IrLlmRoute),测试可注入 record-stub。
+   */
+  def irRoute: Option[nebflow.ir.IrRoutePort]
+
+  /**
    * 共享 spawn(R-C 镜像):readTracker/fileHistory 创建 + AgentActor spawn。
    * 方法体 = core.node.NodeRunner.spawnAgentActor 原体逐字迁 SharedResources
    * (resources 以 this 代入——委托式保证 receiver == p.resources,零行为差);

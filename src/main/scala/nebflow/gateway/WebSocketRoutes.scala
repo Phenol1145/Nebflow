@@ -1341,16 +1341,12 @@ class WebSocketRoutes(
    * -for-byte the resolution listDir has always used; the canonical-path
    * escape guard stays at the call sites (it guards a resolved subpath, not
    * the root itself).
+   * P1-3: body migrated verbatim to the gateway single point
+   * [[ExplorerRoots.resolve]] ([D20]) — shared with the llm route leg; this
+   * private def is now a pure delegation.
    */
   private def resolveExplorerBaseRoot(sessionId: String, overrideRoot: Option[String]): IO[String] =
-    overrideRoot match
-      case Some(root) => IO.pure(root)
-      case None =>
-        for
-          metaOpt <- sessionStore.getSessionMeta(sessionId)
-          folderId = metaOpt.flatMap(_.folderId)
-          prOpt <- sessionStore.resolveProjectRoot(folderId)
-        yield prOpt.getOrElse((PathUtil.dataRoot / "projects").toString)
+    ExplorerRoots.resolve(sessionStore, sessionId, overrideRoot)
 
   /** Public facade for REST API to call into the same message handler. */
   def handleMessagePublic(text: String, wsSend: io.circe.Json => IO[Unit]): IO[Unit] =
