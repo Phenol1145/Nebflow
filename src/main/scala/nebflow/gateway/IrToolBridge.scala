@@ -1,5 +1,5 @@
-/* 命令 IR 路由层 P1-2 批 A：内置 Tool → IR 命令的**桥本体**（表 → CommandDef 装配 +
- * DevHandler 四面适配 + 幂等 reindex）。
+/* 命令 IR 路由层 P1-2 批 A（只读七件）+ 批 B（写面八件）：内置 Tool → IR 命令的
+ * **桥本体**（表 → CommandDef 装配 + DevHandler 四面适配 + 幂等 reindex）。
  *
  * 单键空间纪律（§7.5 并存期铁律）：本桥**只读** `ToolRegistry.TOOL_MAP` 查实例，
  * 零 `registerTool`/`unregisterTool` 调用——`dev:tool:*` 名只存在于 IR 侧
@@ -14,12 +14,19 @@
  *    AgentControl 直调点）——`projectRoot=""`、`sharedResources=Some(sr)`、
  *    `actorSystem=Some(sr.actorSystem)`；每调用回填 `sessionId`/`requestId`（CallCtx），
  *    其余槽位缺省（`sandbox=off` ⇒ Read 拒相对路径、Glob/Grep 相对根 = user.dir——
- *    与 REST 直调旧行为同款，诚实不发明会话根解析）；
+ *    与 REST 直调旧行为同款，诚实不发明会话根解析）。批 B 写面同款诚实降级：
+ *    `fileHistory`/`fileLockManager`/`readTracker`/`fileChangeTracker`/`wsSend`/
+ *    `agentActorRef`/`agentDef`/`isDispatcher`/`flowNodeId` 全 None/false ⇒ Write/Edit
+ *    的 Option-traverse 全 no-op（无快照/无锁/无 WS 帧/无记忆通知，MemoryChangeNotifier
+ *    同步链），Pop/TaskBoard 身份闸 fail-closed，ProjectCreate 无 actor 面——与 REST
+ *    直调旧行为一致，**不发明会话根/身份/WS 通道**（模板零槽位新增是批 B 结构性结论）；
  *  ③ 结果映射：`Right(s) → StreamValue.Text(s)`；`Left(ToolError(m)) →
  *    IrError.commandFailed(m)`（§12 迁移口径：exit 1 + command.failed，**禁止**把工具
  *    失败伪装成路由层错误）；异常兜底同码（`DevCommands` handleErrorWith 先例）；
- *  ④ J6：七件声明 `io.stdout = Text` 且适配器只产 `StreamValue.Text` ⇒ 执行器
- *    声明/实况闸恒过（text 1MiB 限额失败不截断是 §5.2 规范行为）。
+ *  ④ J6：十五件声明 `io.stdout = Text` 且适配器只产 `StreamValue.Text` ⇒ 执行器
+ *    声明/实况闸恒过（text 1MiB 限额失败不截断是 §5.2 规范行为）。批 B 注记：Card
+ *    结果 = `___CARD_HTML___` + JSON 载荷（本地引用已内联），是 JSON 文本 ⇒ Text 恒符；
+ *    大卡片超 1MiB 按规范失败（诚实，不截断）。
  */
 package nebflow.gateway
 
