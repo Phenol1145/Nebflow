@@ -35,10 +35,10 @@ object AtomicJson:
    * 原子 move**，不改原子-or-fail 语义；超限仍抛出原异常（fail-loud 不变）。
    */
   private def moveAtomically(
-      tmp: java.nio.file.Path,
-      target: java.nio.file.Path,
-      options: Seq[java.nio.file.StandardCopyOption],
-      attempt: Int = 1
+    tmp: java.nio.file.Path,
+    target: java.nio.file.Path,
+    options: Seq[java.nio.file.StandardCopyOption],
+    attempt: Int = 1
   ): Unit =
     try java.nio.file.Files.move(tmp, target, options*)
     catch
@@ -92,8 +92,7 @@ object AtomicJson:
       val ch = java.nio.channels.FileChannel.open(tmp.toNIO, java.nio.file.StandardOpenOption.WRITE)
       try ch.force(true)
       finally ch.close()
-      try
-        moveAtomically(tmp.toNIO, path.toNIO, Seq(java.nio.file.StandardCopyOption.ATOMIC_MOVE))
+      try moveAtomically(tmp.toNIO, path.toNIO, Seq(java.nio.file.StandardCopyOption.ATOMIC_MOVE))
       catch
         case _: java.nio.file.AtomicMoveNotSupportedException =>
           // Providers without atomic move support: degrade to a replacing

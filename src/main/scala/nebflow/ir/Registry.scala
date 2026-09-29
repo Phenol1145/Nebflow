@@ -53,6 +53,13 @@ final class CommandRegistry(workspaceTrusted: Boolean = true):
 
   def get(name: String): Option[CommandDef] = table.get(name)
 
+  /**
+   * 摘除面（P1-2）：同档重注册 = N4 碰撞拒绝（[[install]]），幂等 reindex（先摘后挂）
+   * 必须先摘。表是 `LinkedHashMap`——本批的表变更只发生在 boot 单 fiber；热重载面的
+   * 并发写保护留给引入热重载的批次（P1-2 批 B/C）裁定。
+   */
+  def unregister(name: String): Option[CommandDef] = table.remove(name)
+
   def names: List[String] = table.keys.toList
 
   def all: List[CommandDef] = table.values.toList

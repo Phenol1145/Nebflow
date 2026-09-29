@@ -260,7 +260,8 @@ object GatewayMain extends IOApp:
   private def startMcpServers(
     config: NebflowServiceConfig,
     manager: McpManager,
-    agentLibrary: AgentLibrary
+    agentLibrary: AgentLibrary,
+    shared: nebflow.core.AgentRuntimePort
   ): IO[Unit] =
     val fromConfig = config.mcpServers.getOrElse(Map.empty)
     for
@@ -271,7 +272,14 @@ object GatewayMain extends IOApp:
       _ <- startAgentMcpServers(manager)
       _ <- logger.info("MCP servers initialized")
       _ <- loadExternalTools()
+      // P1-2 批 A：内置 Tool 桥接进 IR 命令表——时机钉（必须在 ToolLoader.reload 与
+      // MCP startAll 之后；本 for-comprehension 同 fiber 串行保证次序）。失败
+      // best-effort 记 ERROR 不炸 boot（单件失败已在 reindex 内跳过）。
+      _ <- IO(IrGateway.initBridge(shared)).handleErrorWith(e =>
+        logger.error(s"IR tool bridge init failed: ${Option(e.getMessage).getOrElse(e.toString)}")
+      )
     yield ()
+    end for
 
   end startMcpServers
 
@@ -1488,7 +1496,12 @@ object GatewayMain extends IOApp:
                                                             )
                                                             .start
                                                           // --- Background init: MCP servers ---
-                                                          _ <- startMcpServers(config, mcpManager, agentLibrary)
+                                                          _ <- startMcpServers(
+                                                            config,
+                                                            mcpManager,
+                                                            agentLibrary,
+                                                            sharedResourcesWithDaemon
+                                                          )
                                                             .flatMap { _ =>
                                                               // Broadcast updated MCP server list to all connected clients
                                                               mcpManager.listServers

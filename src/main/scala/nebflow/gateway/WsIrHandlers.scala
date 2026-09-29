@@ -32,17 +32,32 @@ private[gateway] object IrGateway:
     r
 
   /**
-   * 策略：P0 用缺省表（无规则 ⇒ 纯读放行、其余 `Ask`；未知 cap fail-closed；`RealBash`
-   * 危险判定 fail-closed 为「一律危险」）。规则表怎么存怎么配是 §8.2 划给实现的自由面 ——
-   * 数据化配置在 P1 落地，此处保持**缺省即安全**。
+   * 策略：P0 缺省表（无规则 ⇒ 纯读放行、其余 `Ask`；未知 cap fail-closed；`RealBash`
+   * 危险判定 fail-closed 为「一律危险」）+ P1-2 批 A 的 `dev:tool:*` 一律 `Ask`
+   * （[[IrToolCaps.askRule]]：桥接件全为 `prefix="*"` 的 VFS 外不透明宿主访问，
+   * §8.1「无法做包含性判定 ⇒ 不假装能判」）。规则按名前缀只罩 `dev:tool:*` ⇒
+   * `dev:fs:*` 的缺省行为不变；`auto-all` 档把 `Ask` 折 `Allow` 是既有档位语义。
    */
-  private lazy val policy: PolicyEngine = new PolicyEngine(PolicyConfig())
+  private lazy val policy: PolicyEngine = new PolicyEngine(PolicyConfig(rules = IrToolCaps.askRules))
 
   private lazy val auditSink: AuditSink = jsonlAuditSink()
 
   private lazy val router: Router = new Router(registry, policy, auditSink)
 
   def instance: Router = router
+
+  /**
+   * P1-2 桥接装载入口（幂等 reindex）：把批 A 七件内置 Tool 注册进 IR 命令表
+   * （[[IrToolBridge.reindex]]：先摘后挂，单件失败记 ERROR 跳过）。时机钉：由
+   * `GatewayMain.startMcpServers` 在 `loadExternalTools()`（ToolLoader.reload +
+   * MCP startAll）之后调用——同 fiber 串行且晚于二者。同步面零抛（整体异常在此
+   * 兜底记 ERROR，不炸 boot）。
+   */
+  def initBridge(sr: nebflow.core.AgentRuntimePort): Unit =
+    try IrToolBridge.reindex(registry, Some(sr))
+    catch
+      case e: Throwable =>
+        logger.error(s"IR tool bridge init failed: ${Option(e.getMessage).getOrElse(e.toString)}")
 
   /** 糖腿查表（P1-1）：`ArgvSugar.lower` 的 lookup 参数（params 是 argv 唯一权威面，§7.1）。 */
   def lookup(name: String): Option[CommandDef] = registry.get(name)
