@@ -51,43 +51,46 @@ final class CommandRegistry(workspaceTrusted: Boolean = true):
       reg <- install(canonical, cmd)
     yield reg
 
-  def get(name: String): Option[CommandDef] = table.get(name)
+  def get(name: String): Option[CommandDef] = synchronized(table.get(name))
 
   /**
    * 摘除面（P1-2）：同档重注册 = N4 碰撞拒绝（[[install]]），幂等 reindex（先摘后挂）
-   * 必须先摘。表是 `LinkedHashMap`——本批的表变更只发生在 boot 单 fiber；热重载面的
-   * 并发写保护留给引入热重载的批次（P1-2 批 B/C）裁定。
+   * 必须先摘。表是 `LinkedHashMap`——P1-4 起表变更不再只发生在 boot 单 fiber（ext: 桥
+   * 经 ToolLoader watcher 纤程热重载写表），故全部表操作（读与写）已 `synchronized`
+   * （粗粒度monitor：注册表小，争用可忽略；兑现 :57-59 原注释留给热重载批次的并发保护）。
    */
-  def unregister(name: String): Option[CommandDef] = table.remove(name)
+  def unregister(name: String): Option[CommandDef] = synchronized(table.remove(name))
 
-  def names: List[String] = table.keys.toList
+  def names: List[String] = synchronized(table.keys.toList)
 
-  def all: List[CommandDef] = table.values.toList
+  def all: List[CommandDef] = synchronized(table.values.toList)
 
-  def size: Int = table.size
+  def size: Int = synchronized(table.size)
 
   // ── 安装（同名语义 §7.4） ──────────────────────────────────
 
   private def install(canonical: String, cmd: CommandDef): Either[IrError, Registration] =
-    table.get(canonical) match
-      case None =>
-        table.update(canonical, cmd)
-        Right(Registration(canonical, replaced = false))
-      case Some(existing) =>
-        val incoming = Trust.priority(cmd.trust)
-        val current = Trust.priority(existing.trust)
-        if incoming == current then
-          Left(
-            IrError
-              .nameInvalid(canonical, "already registered in the same trust tier (N4 collision)")
-              .withDetail("reason", "collision".asJson)
-          )
-        else if incoming > current then
+    synchronized {
+      table.get(canonical) match
+        case None =>
           table.update(canonical, cmd)
-          Right(Registration(canonical, replaced = true))
-        else
-          // 低档不覆盖高档（"高层覆盖低层、builtin 恒赢"沿用现状，§7.4）
           Right(Registration(canonical, replaced = false))
+        case Some(existing) =>
+          val incoming = Trust.priority(cmd.trust)
+          val current = Trust.priority(existing.trust)
+          if incoming == current then
+            Left(
+              IrError
+                .nameInvalid(canonical, "already registered in the same trust tier (N4 collision)")
+                .withDetail("reason", "collision".asJson)
+            )
+          else if incoming > current then
+            table.update(canonical, cmd)
+            Right(Registration(canonical, replaced = true))
+          else
+            // 低档不覆盖高档（"高层覆盖低层、builtin 恒赢"沿用现状，§7.4）
+            Right(Registration(canonical, replaced = false))
+    }
 
   private def validateCaps(cmd: CommandDef): Either[IrError, Unit] =
     cmd.caps.collectFirst {
@@ -157,7 +160,9 @@ final class CommandRegistry(workspaceTrusted: Boolean = true):
               .withDetail("reason", "llm_name_missing".asJson)
           )
         case Some(name) =>
-          table.collectFirst { case (k, d) if d.llmName.contains(name) && k != cmd.name => k } match
+          synchronized {
+            table.collectFirst { case (k, d) if d.llmName.contains(name) && k != cmd.name => k }
+          } match
             case Some(other) =>
               Left(
                 IrError

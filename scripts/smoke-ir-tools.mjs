@@ -65,13 +65,28 @@
 //      注：LLM 改道闸本体（executeTool → IrRoutePort）需真实 LLM 轮，活实例冒烟不驱动
 //      模型面——该面的行为钉由 IrLlmGateSpec/IrLlmRouteSpec/IrLlmContractSpec 覆盖；
 //      本脚本对 llm 面只钉「直帧腿策略把守 + 审计留痕」两个活实例可证的事实。
+//  ── P1-4（策略表数据化 + ext: 过渡注册，21-23）────────────────────────────
+//  21. ext: 热装载：写 <HOME>/tools/ir-smoke-ext.json（name "Ir Smoke Ext" ⇒ 规范化
+//      ext:tool:ir_smoke_ext）⇒ watcher→reload→钩重装载后糖腿可达——confirm-edits ⇒
+//      await_approval（rule=default:no-rule，四件套不⊆{FsRead} 的缺省 Ask）；
+//      auto-all ⇒ done/exit=126/router.binding_unavailable/message 含 registration-only
+//      （注册面存在、执行面诚实拒答）；轮询至不再是 unknown_command（watcher 500ms
+//      debounce + reload）；
+// 21b. 审批闭环后仍 126（confirm-edits 态）：铸凭据重提交 ⇒ Ask 折 Allow ⇒ 执行面
+//      拒答依旧（126 不是审批能翻的门——binding 缺席非策略判定）；
+//  22. ext: 命名空间活且不发明名字：/ext:tool:nope ⇒ invalid/exit=127/
+//      router.unknown_command；
+//  23. ir.policy 热规则双向：nebflow.json 写 Deny(ext:tool:ir_smoke_ext) ⇒ rejected/
+//      exit=125/policy.denied+details.rule=配置串；还原配置后回到缺省 Ask 腿（await_
+//      approval 或 done+126）——策略表逐请求热读、改完即生效（写面=读改写保留原键）。
 //
 // Run: NEBFLOW_URL=http://localhost:8099 NEBFLOW_HOME_DIR=/tmp/nebflow-ir-smoke \
 //        node scripts/smoke-ir-tools.mjs
-// 注：腿 2/7 的路径要求绝对且不含空格（糖 tokenize 按空白切分，无引号）。
+// 注：腿 2/7 的路径要求绝对且不含空格（糖 tokenize 按空白切分，无引号）；
+//     腿 21 的 --json 值必须无空格紧凑单 token（同因）。
 
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 
 const URL_BASE = process.env.NEBFLOW_URL || 'http://localhost:8099';
 const HOME = process.env.NEBFLOW_HOME_DIR;
@@ -580,6 +595,97 @@ try {
     );
   }
 
+  // ── 21. P1-4 ext: 过渡注册：热装载 tool.json ⇒ watcher→reload→钩 ⇒ ext: 名在册 ──
+  //    执行面诚实拒答（126/binding_unavailable），策略面照常把守（缺省 default:no-rule Ask）
+  const EXT_NAME = 'ext:tool:ir_smoke_ext'; // Names.normalize("Ir Smoke Ext")
+  let extResp = null;
+  {
+    const extJson = join(HOME, 'tools', 'ir-smoke-ext.json');
+    mkdirSync(dirname(extJson), { recursive: true });
+    writeFileSync(extJson, JSON.stringify({
+      name: 'Ir Smoke Ext',
+      description: 'P1-4 smoke ext tool (registration-only execution face)',
+      command: 'echo ext',
+      inputSchema: { type: 'object', properties: {} },
+    }), 'utf8');
+    // watcher 500ms debounce + reload；轮询糖腿直到不再是 unknown_command（最多 ~9s）
+    for (let i = 0; i < 10; i++) {
+      conn.ws.send(JSON.stringify({ sessionId: SESSION, content: `/${EXT_NAME} --json {}` })); // 糖腿须 / 前缀
+      const r = await nextIrResult(conn); // sugar: /ext:tool:…（首段 ext ∈ Namespaces）
+      extResp = r.response || {};
+      if (extResp.status !== 'invalid') break;
+      await new Promise((res) => setTimeout(res, 800));
+    }
+    check(
+      `sugar ${EXT_NAME} hot-loaded → confirm-edits ⇒ await_approval(default:no-rule) / auto-all ⇒ done+126 binding_unavailable`,
+      extResp.status !== 'invalid' && (confirmMode
+        ? extResp.status === 'await_approval' && extResp.approval?.rule === 'default:no-rule'
+        : extResp.status === 'done' && extResp.exit === 126 &&
+          extResp.error?.code === 'router.binding_unavailable' &&
+          (extResp.error?.message || '').includes('registration-only')),
+      `status=${extResp?.status} exit=${extResp?.exit} code=${extResp?.error?.code} rule=${extResp?.approval?.rule || ''}`
+    );
+  }
+
+  // ── 21b. 审批闭环后仍 126（confirm-edits 态）：Ask 折 Allow ⇒ 执行面拒答依旧 ──────
+  {
+    if (confirmMode && extResp?.status === 'await_approval') {
+      const ap = extResp.approval || {};
+      const now = new Date();
+      const exp = new Date(now.getTime() + 10 * 60 * 1000);
+      const cred = {
+        planDigest: ap.planDigest,
+        capsDigest: ap.capsDigest,
+        approvedBy: 'human:console',
+        approvedAt: now.toISOString(),
+        expiresAt: exp.toISOString(),
+        nonce: 'smoke-' + Math.random().toString(36).slice(2),
+      };
+      const p = await submitDirect(conn, { call: { name: EXT_NAME, args: {} } }, 'smoke-ir-ext-approve', { approval: cred });
+      check(
+        'ext approve & resubmit → done / exit=126 / binding_unavailable (binding absence is not an approval gate)',
+        p.status === 'done' && p.exit === 126 && p.error?.code === 'router.binding_unavailable' &&
+          (p.error?.message || '').includes('registration-only'),
+        `status=${p.status} exit=${p.exit} code=${p.error?.code}`
+      );
+    }
+  }
+
+  // ── 22. ext: 命名空间活且不发明名字（unknown ext ⇒ 127，与 dev: 同码）──────────
+  {
+    const p = await submitDirect(conn, { call: { name: 'ext:tool:nope', args: {} } }, 'smoke-ir-ext-unknown');
+    check('ext namespace live: unknown ext name → invalid / exit=127 / router.unknown_command',
+      p.status === 'invalid' && p.exit === 127 && p.error?.code === 'router.unknown_command',
+      `status=${p.status} exit=${p.exit} code=${p.error?.code}`);
+  }
+
+  // ── 23. ir.policy 热规则双向（读改写保留原键；还原后回到缺省腿）──────────────────
+  {
+    const cfgPath = join(HOME, 'nebflow.json');
+    const existed = existsSync(cfgPath);
+    const original = existed ? readFileSync(cfgPath, 'utf8') : null;
+    let cfgObj = {};
+    try { cfgObj = existed ? JSON.parse(original) : {}; } catch { cfgObj = {}; }
+    cfgObj.ir = {
+      ...(cfgObj.ir || {}),
+      policy: { rules: [{ name: EXT_NAME, decision: 'deny', reason: 'smoke deny', rule: 's:ext' }] },
+    };
+    writeFileSync(cfgPath, JSON.stringify(cfgObj), 'utf8');
+    const p = await submitDirect(conn, { call: { name: EXT_NAME, args: {} } }, 'smoke-ir-ext-deny');
+    check('ir.policy hot rules: Deny(ext:tool:ir_smoke_ext) → rejected / exit=125 / policy.denied with configured rule',
+      p.status === 'rejected' && p.exit === 125 && p.error?.code === 'policy.denied' &&
+        p.error?.details?.rule === 's:ext',
+      `status=${p.status} exit=${p.exit} code=${p.error?.code} rule=${p.error?.details?.rule}`);
+    // 还原（热读双向：deny 移除即回到缺省 Ask 腿）
+    if (existed) writeFileSync(cfgPath, original, 'utf8'); else rmSync(cfgPath);
+    const p2 = await submitDirect(conn, { call: { name: EXT_NAME, args: {} } }, 'smoke-ir-ext-restore');
+    check('ir.policy restore: deny removed → back to default:no-rule leg (await_approval | done+126)',
+      confirmMode
+        ? p2.status === 'await_approval' && p2.approval?.rule === 'default:no-rule'
+        : p2.status === 'done' && p2.exit === 126 && p2.error?.code === 'router.binding_unavailable',
+      `status=${p2.status} exit=${p2.exit} rule=${p2.approval?.rule || p2.error?.code}`);
+  }
+
   // ── 20. dev:fs:* 零扰动复钉（批 C 十五件注册不扰旧腿）+ 总计数自检 ───────────────
   {
     const p = await submitDirect(conn, { call: { name: 'dev:fs:ls', args: {} } }, 'smoke-ir-tools-fs-batchc');
@@ -587,9 +693,10 @@ try {
       p.status === 'done' && p.exit === 0,
       `status=${p.status} exit=${p.exit}`);
     // 总计数自检：固定腿 13（1,2,2b,3,5,6,7,8,10,11,12,13,19b）+ 档位两态腿 4/9
-    // （auto-all 各 1、confirm-edits 各 2）+ 批 C 七腿（14-20）+ 本自检 1。
+    // （auto-all 各 1、confirm-edits 各 2）+ 批 C 七腿（14-20）+ P1-4 五腿
+    // （21 一条 + 21b confirm-only 一条 + 22 一条 + 23 两条）+ 本自检 1。
     // P1-3：腿 3/12/18 仍各恰一条 check（断言按档位两态分叉），新增 19b 一条。
-    const expected = 13 + (confirmMode ? 4 : 2) + 7 + 1;
+    const expected = 13 + (confirmMode ? 4 : 2) + 7 + (4 + (confirmMode ? 1 : 0)) + 1;
     check(`self-count: executed checks (${executed + 1}) === expected (${expected}, mode=${confirmMode ? 'confirm-edits' : 'auto-all'})`,
       executed + 1 === expected,
       `executed=${executed} expected=${expected}`);

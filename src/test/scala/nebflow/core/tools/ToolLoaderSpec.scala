@@ -207,25 +207,33 @@ class ToolLoaderSpec extends CatsEffectSuite:
       assert(map2.contains("flow-tool"), "Flow tool should survive team dir removal")
 
   // --- $TOOL_DIR environment variable ---
+  // 注（P1-4 批修复，环境确定性）：断言面 = ScriptTool 公开的 `toolDir` 字段——它是
+  // TOOL_DIR 的唯一取值源（ScriptTool.call 里 pb.environment().put("TOOL_DIR",
+  // toolDir.toString)），不再起 sh 子进程回读：①Windows/MSYS 下 loadFromDir 的文本
+  // 替换会把 "$TOOL_DIR" 变成命令内联路径，在 sh -c 双引号解析里丢反斜杠（本机实测
+  // 内联 "C:\a\b" ⇒ "C:ab"，env 腿完好）；②门禁/沙箱环境不保证 sh 可用。解析语义
+  // （TOOL_DIR 指向持有该配置的目录、按层解析）由字段钉住，跨平台确定性。
 
   test("TOOL_DIR env var points at the tool config directory"):
     for
       _ <- resetState()
-      _ <- IO(writeToolConfig(toolsDir, "echo-tool", "echo-tool", "echo", """printf '%s' "$TOOL_DIR""""))
+      _ <- IO(writeToolConfig(toolsDir, "echo-tool", "echo-tool", "echo"))
       _ <- ToolLoader.reload()
       tool = ToolRegistry.TOOL_MAP("echo-tool")
-      result <- tool.call(JsonObject.empty, ToolContext(projectRoot = tempRoot.toString))
-    yield assertEquals(result, Right[ToolError, String](toolsDir.toString))
+    yield tool match
+      case st: ScriptTool => assertEquals(st.toolDir, toolsDir)
+      case other => fail(s"expected a ScriptTool for 'echo-tool', got '${other.name}'")
 
   test("TOOL_DIR is set per-layer for team tools"):
     for
       _ <- resetState()
       teamTools = tempRoot / "teams" / "myteam" / "tools"
-      _ <- IO(writeToolConfig(teamTools, "echo-team", "echo-team", "echo", """printf '%s' "$TOOL_DIR""""))
+      _ <- IO(writeToolConfig(teamTools, "echo-team", "echo-team", "echo"))
       _ <- ToolLoader.reload()
       tool = ToolRegistry.TOOL_MAP("echo-team")
-      result <- tool.call(JsonObject.empty, ToolContext(projectRoot = tempRoot.toString))
-    yield assertEquals(result, Right[ToolError, String](teamTools.toString))
+    yield tool match
+      case st: ScriptTool => assertEquals(st.toolDir, teamTools)
+      case other => fail(s"expected a ScriptTool for 'echo-team', got '${other.name}'")
 
   // --- Agent directory tools (three-layer agent dirs) ---
   // 2026-09-06 起 per-agent 层（agents/*/tools 与 teams/flows/*/agents/*/tools）
@@ -337,7 +345,10 @@ class ToolLoaderSpec extends CatsEffectSuite:
       cfg = loaded.collectFirst { case (c, _) if c.name == "issue" => c }.get
     yield assertEquals(
       cfg.command,
-      s"bash ${toolsDir.toString}/issue/issue.sh",
+      // 期望值经 os.Path 拼接（P1-4 批修复，Windows 环境红）：子目录 sourceDir 的段分隔符
+      // 由 os.Path 按平台渲染（Windows 为 '\'），旧写法字面量 "/issue" 在本机与替换结果
+      // 差一个分隔符。语义不变：$TOOL_DIR 解析到**子目录**而非父目录。
+      s"bash ${(toolsDir / "issue").toString}/issue.sh",
       "$TOOL_DIR should resolve to the subdirectory path"
     )
 

@@ -27,6 +27,21 @@ object ToolLoader:
   )
 
   /**
+   * Post-registration hook (P1-4): invoked at the end of every [[reload]]
+   * with the **filtered** declaration-level (config, sourceDir) pairs — the
+   * same pairs the ScriptTool registrations were built from. Boot and the
+   * file watcher share reload() as their single entry point, so setting the
+   * hook once covers both moments. The hook must not throw through: its
+   * errors are absorbed here with an ERROR log (the watcher thread must
+   * survive a bad hook). Core never depends on gateway — the hook is set
+   * by the assembly layer (GatewayMain wires it to the IR ext: bridge).
+   */
+  @volatile private var reloadHook: List[(ExternalToolConfig, os.Path)] => IO[Unit] = _ => IO.unit
+
+  def setReloadHook(hook: List[(ExternalToolConfig, os.Path)] => IO[Unit]): Unit =
+    reloadHook = hook
+
+  /**
    * Reload all external tools from the three layers (global / team / flow):
    * unregister previously loaded tools, re-read all JSON configs, and
    * register fresh ScriptTool instances. On name conflicts a higher-priority
@@ -39,21 +54,24 @@ object ToolLoader:
     for
       _ <- IO(registeredNames.forEach(name => ToolRegistry.unregisterTool(name)))
       _ <- IO(registeredNames.clear())
-      scripts <- loadScripts()
-      registered = scripts.filterNot { s =>
-        val conflict = ToolRegistry.TOOL_MAP.contains(s.name)
-        if conflict then logger.warn(s"External tool '${s.name}' conflicts with built-in — skipping")
+      configs <- loadAll()
+      registered = configs.filterNot { case (config, _) =>
+        val conflict = ToolRegistry.TOOL_MAP.contains(config.name)
+        if conflict then logger.warn(s"External tool '${config.name}' conflicts with built-in — skipping")
         conflict
       }
       _ <- IO {
-        registered.foreach { t =>
-          ToolRegistry.registerTool(t)
-          registeredNames.add(t.name)
+        registered.foreach { case (config, dir) =>
+          ToolRegistry.registerTool(ScriptTool(config, dir))
+          registeredNames.add(config.name)
         }
       }
+      _ <- reloadHook(registered).handleErrorWith(e =>
+        logger.error(s"Tool reload hook failed: ${Option(e.getMessage).getOrElse(e.toString)}")
+      )
       _ <- logger.info(
         if registered.nonEmpty then
-          s"Loaded ${registered.size} external tool(s): ${registered.map(_.name).mkString(", ")}"
+          s"Loaded ${registered.size} external tool(s): ${registered.map(_._1.name).mkString(", ")}"
         else "No external tools loaded"
       )
     yield ()

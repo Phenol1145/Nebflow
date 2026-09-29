@@ -42,7 +42,7 @@ private[gateway] object IrGateway:
    * 仅当用户写显式 `Allow(dev:tool:bash)` 时危险命令被硬底拉回 `Ask`（rule
    * `bash:danger`）、安全命令放行；默认 askRule 下 `Ask+Ask=Ask` 逐字节不变。
    */
-  private lazy val policy: PolicyEngine = new PolicyEngine(
+  private[gateway] lazy val policy: PolicyEngine = new PolicyEngine(
     PolicyConfig(
       rules = IrToolCaps.askRules,
       dangerousBash = IrToolBridge.bashDanger,
@@ -83,6 +83,23 @@ private[gateway] object IrGateway:
 
   /** 糖腿查表（P1-1）：`ArgvSugar.lower` 的 lookup 参数（params 是 argv 唯一权威面，§7.1）。 */
   def lookup(name: String): Option[CommandDef] = registry.get(name)
+
+  /**
+   * P1-4（策略表数据化）：请求级策略视图（`nebflow.json` ir.policy 逐访问热读，
+   * fail-closed——见 [[IrPolicyRules]]）。人侧糖腿/直连 ir 帧与 llm 改道腿（IrLlmRoute
+   * 经 forGateway 注入）在 safety 解析旁各自取一次，一请求一视图。
+   */
+  def policyView: IO[PolicyEngine] = IrPolicyRules.view(policy)
+
+  /**
+   * P1-4（ext: 过渡注册）重装载入口：ToolLoader reload 钩（boot 与 watcher 同一入口）
+   * 交付过滤后的声明级 config 对。同步面零抛（整体异常兜底记 ERROR，不炸 boot/热重载）。
+   */
+  def reindexExt(configs: List[(nebflow.core.tools.ExternalToolConfig, os.Path)]): Unit =
+    try IrExtBridge.reindex(registry, configs)
+    catch
+      case e: Throwable =>
+        logger.error(s"IR ext bridge reindex failed: ${Option(e.getMessage).getOrElse(e.toString)}")
 
   /**
    * 审计落点：`<dataRoot>/logs/ir/<yyyyMMdd>.jsonl`（[T6] 的独立面选项；`ToolsLogWriter`
@@ -230,12 +247,14 @@ private[gateway] object WsIrHandlers:
         for
           rootStr <- resolveExplorerBaseRoot(sessionId, None)
           safety <- sharedResources.effectiveSafetyMode
+          policyView <- IrGateway.policyView
           result <- IrGateway.instance.submit(
             // 服务端构信封：tenant=human/console 常量（gateway 只有 token 级 auth，无逐用户
             // 身份——openQuestions 待作者裁定）、ingress=human、requestId=UUID
             IrRequest(call, Tenant.Human("console"), Ingress.Human, sessionId, requestId),
             VfsRoot(os.Path(rootStr, os.pwd)),
-            IrSafety.of(safety)
+            IrSafety.of(safety),
+            Some(policyView)
           )
           _ <- sendResult(result)
         yield ()
@@ -280,7 +299,13 @@ private[gateway] object WsIrHandlers:
       for
         rootStr <- resolveExplorerBaseRoot(sessionId, None)
         safety <- sharedResources.effectiveSafetyMode
-        result <- IrGateway.instance.submit(prepared, VfsRoot(os.Path(rootStr, os.pwd)), IrSafety.of(safety))
+        policyView <- IrGateway.policyView
+        result <- IrGateway.instance.submit(
+          prepared,
+          VfsRoot(os.Path(rootStr, os.pwd)),
+          IrSafety.of(safety),
+          Some(policyView)
+        )
         _ <- wsSend(
           Json.obj(
             "type" -> "irResult".asJson,

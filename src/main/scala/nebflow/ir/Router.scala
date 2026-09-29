@@ -165,16 +165,21 @@ final class Router(
 
   private val logger = NebflowLogger.forName("nebflow.ir.router")
 
-  /** JSON 形态的入口（WS/REST 帧用）：信封 → 响应信封。 */
-  def submit(json: Json, root: VfsRoot, safety: Safety): IO[Json] =
+  /** JSON 形态的入口（WS/REST 帧用）：信封 → 响应信封（policyOverride 无缺省——两 overload 不得同时带默认参；装配腿显式传视图）。 */
+  def submit(json: Json, root: VfsRoot, safety: Safety, policyOverride: Option[PolicyEngine]): IO[Json] =
     IrRequest.decode(json) match
       case Left(err) =>
         // 信封坏掉时 requestId 仍尽力取回（审计/回执要能对上那一次调用）
         val rid = json.hcursor.downField("requestId").as[String].toOption.getOrElse("")
         IO.pure(invalid(rid, err).toJson)
-      case Right(req) => submit(req, root, safety).map(_.toJson)
+      case Right(req) => submit(req, root, safety, policyOverride).map(_.toJson)
 
-  def submit(req: IrRequest, root: VfsRoot, safety: Safety): IO[PlanResult] =
+  def submit(
+    req: IrRequest,
+    root: VfsRoot,
+    safety: Safety,
+    policyOverride: Option[PolicyEngine] = None
+  ): IO[PlanResult] =
     if req.ir != Ir.Version then IO.pure(invalid(req.requestId, IrError.badVersion(req.ir, Ir.Version)))
     else if !Tenant.allows(req.tenant, req.ingress) then
       IO.pure(
@@ -186,24 +191,28 @@ final class Router(
         )
       )
     else
+      // P1-4（策略表数据化）：请求级策略视图——一请求一视图（planner/executor/audit 同一
+      // policy，计划内无规则漂移，与 capsDigest 防描述符漂移同理）。缺省 None ⇒ 引擎 =
+      // 装配面 policy：既有调用方与全部既有测试零改动。
+      val eng = policyOverride.getOrElse(policy)
       val ctx = CallCtx(req.tenant, req.ingress, req.sessionId, req.requestId, Ir.RootPath, root, safety, limits)
       // 计划期含一次 IO（路径 realpath，[P8]），故整条链是 IO
-      Planner.plan(req.plan, ctx, registry, policy, limits, hmacKey).flatMap {
+      Planner.plan(req.plan, ctx, registry, eng, limits, hmacKey).flatMap {
         case Left(err) =>
           // 计划非法：没有任何节点 ⇒ 无节点级审计（§8.6 的「每节点一条」在此为空集）
           logger.warn(s"ir plan rejected as invalid: ${err.code}").as(invalid(req.requestId, err))
-        case Right(plan) => settle(req, plan, ctx)
+        case Right(plan) => settle(req, plan, ctx, eng)
       }
 
   // ── §8.4 步 4/5/6 ─────────────────────────────────────────
 
-  private def settle(req: IrRequest, plan: Plan, ctx: CallCtx): IO[PlanResult] =
+  private def settle(req: IrRequest, plan: Plan, ctx: CallCtx, eng: PolicyEngine): IO[PlanResult] =
     plan.denied match
       case Some(node) =>
         val (reason, rule) = node.decision match
           case Decision.Deny(r, ru) => (r, ru)
           case _ => ("denied", "policy")
-        audit(plan, ctx, Map.empty) *>
+        audit(plan, ctx, Map.empty, eng) *>
           IO.pure(
             PlanResult(
               requestId = req.requestId,
@@ -214,7 +223,7 @@ final class Router(
           )
       case None =>
         plan.firstAsk match
-          case None => execute(req, plan, ctx)
+          case None => execute(req, plan, ctx, eng)
           case Some(askNode) =>
             val (reason, rule) = askNode.decision match
               case Decision.Ask(r, ru) => (r, ru)
@@ -223,14 +232,14 @@ final class Router(
               // 5a：凭据有效 ⇒ 该 Ask 折算为 Allow，继续执行（[D26] 的闭环唯一入口）
               case Some(cred) =>
                 checkApproval(cred, plan, ctx).flatMap {
-                  case Right(()) => execute(req, plan, ctx)
+                  case Right(()) => execute(req, plan, ctx, eng)
                   case Left(ApprovalFailure.Misuse(err)) =>
-                    audit(plan, ctx, Map.empty).as(
+                    audit(plan, ctx, Map.empty, eng).as(
                       PlanResult(req.requestId, Status.Rejected, Some(ExitCode.Rejected), error = Some(err))
                     )
                   // capsDigest 漂移（TOCTOU，C38）：凭据失效 ⇒ 重新 await_approval（§8.5）
                   case Left(ApprovalFailure.Stale(err)) =>
-                    audit(plan, ctx, Map.empty).as(
+                    audit(plan, ctx, Map.empty, eng).as(
                       PlanResult(
                         req.requestId,
                         Status.AwaitApproval,
@@ -242,7 +251,7 @@ final class Router(
                 }
               // 5b：无凭据 ⇒ await_approval（**零执行**，exit 为 null）
               case None =>
-                audit(plan, ctx, Map.empty).as(
+                audit(plan, ctx, Map.empty, eng).as(
                   PlanResult(
                     req.requestId,
                     Status.AwaitApproval,
@@ -253,10 +262,10 @@ final class Router(
 
             end match
 
-  private def execute(req: IrRequest, plan: Plan, ctx: CallCtx): IO[PlanResult] =
-    Executor.run(plan, ctx, limits, policy).flatMap { exec =>
+  private def execute(req: IrRequest, plan: Plan, ctx: CallCtx, eng: PolicyEngine): IO[PlanResult] =
+    Executor.run(plan, ctx, limits, eng).flatMap { exec =>
       val byNode = exec.results.map(r => r.node -> r).toMap
-      audit(plan, ctx, byNode).as {
+      audit(plan, ctx, byNode, eng).as {
         val failed = exec.results.find(_.exit != ExitCode.Ok)
         PlanResult(
           requestId = req.requestId,
@@ -333,7 +342,7 @@ final class Router(
    * 记录 `exit = null` —— 与 §6.4「被短路未执行的节点不出现在结果中」互补：结果面缺席，
    * 审计面在场。best-effort：审计失败**禁止**影响执行结果。
    */
-  private def audit(plan: Plan, ctx: CallCtx, results: Map[String, NodeResult]): IO[Unit] =
+  private def audit(plan: Plan, ctx: CallCtx, results: Map[String, NodeResult], eng: PolicyEngine): IO[Unit] =
     now
       .flatMap { t =>
         plan.nodes.toList
@@ -353,7 +362,7 @@ final class Router(
                   command = n.target.command,
                   argsDigest = n.argsDigest,
                   caps = n.target.capNames,
-                  capsSource = capsSource(n),
+                  capsSource = capsSource(n, eng),
                   decision = Decision.wire(n.decision),
                   rule = Decision.ruleOf(n.decision),
                   exit = res.map(_.exit),
@@ -366,9 +375,9 @@ final class Router(
       }
       .handleErrorWith(e => logger.warn(s"ir audit failed: ${e.getMessage}"))
 
-  private def capsSource(n: PlannedNode): String =
+  private def capsSource(n: PlannedNode, eng: PolicyEngine): String =
     if n.target.command.startsWith("@redirect:") then Codes.CapsRedirect
-    else if n.target.capKinds.forall(policy.config.knownCapKinds.contains) then Codes.CapsDeclared
+    else if n.target.capKinds.forall(eng.config.knownCapKinds.contains) then Codes.CapsDeclared
     else Codes.CapsPolicyUnknown
 
   private def invalid(requestId: String, err: IrError): PlanResult =

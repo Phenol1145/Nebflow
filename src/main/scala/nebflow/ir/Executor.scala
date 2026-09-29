@@ -480,8 +480,21 @@ object Executor:
   private def invoke(cmd: CommandDef, args: JsonObject, ctx: CallCtx, limits: IrLimits): IO[Outcome] =
     val run: IO[Either[IrError, StreamValue]] = cmd.binding match
       case Binding.Dev(handler) => handler(args, ctx)
+      // P1-4（ext: 过渡注册）：注册面存在、执行面诚实拒答——Binding.Node 的扩展子进程
+      // 宿主（§7.2/§12:637「待 P1 定档」）落地前，宁可 126 也不假装执行。先例：批 A/C
+      // 的 ToolContext 诚实缺席（确定性拒答优于假门）。
+      case _: Binding.Node =>
+        IO.pure(
+          Left(
+            IrError.bindingUnavailable(
+              cmd.name,
+              "ext: bindings are registration-only in this batch — the Node subprocess host " +
+                "(§7.2/§12:637) lands later; refusing instead of executing"
+            )
+          )
+        )
       case _ =>
-        IO.pure(Left(IrError.bindingUnavailable(cmd.name, "P0 executes dev: bindings only (§8 分阶段)")))
+        IO.pure(Left(IrError.bindingUnavailable(cmd.name, "P1 executes dev: bindings only (§12 迁移分期)")))
     run
       .timeoutTo(
         limits.nodeTimeout,
@@ -493,6 +506,9 @@ object Executor:
           val exit = err.code match
             case Codes.Timeout => ExitCode.Timeout
             case Codes.Cancelled => ExitCode.Cancelled
+            // §6.1「126 不可执行：未执行」——BindingUnavailable（ext: 过渡拒答与未落地的
+            // mcp:/bash:/http: 宿主）统一 126；现网零非 Dev 注册命令 ⇒ 对既有面零行为差。
+            case Codes.BindingUnavailable => ExitCode.NotExecutable
             case _ => ExitCode.Failure
           Outcome(exit, None, Some(err))
       }

@@ -29,7 +29,10 @@ private[gateway] final class IrLlmRoute(
   router: Router,
   lookupIr: String => Option[CommandDef],
   rootFor: String => IO[String],
-  safetyOf: IO[nebflow.core.SafetyMode]
+  safetyOf: IO[nebflow.core.SafetyMode],
+  // P1-4：llm 改道腿同享配置驱动策略规则与 fail-closed（生产装配传 Some(IrGateway.policyView)；
+  // 缺省 None ⇒ router 自带 policy ⇒ 既有构造方/既有 spec 行为零改动）
+  policyViewOf: Option[IO[PolicyEngine]] = None
 ) extends IrRoutePort:
 
   def route(
@@ -60,6 +63,7 @@ private[gateway] final class IrLlmRoute(
     for
       rootStr <- rootFor(sessionId)
       mode <- safetyOf
+      policyView <- policyViewOf.getOrElse(IO.pure(router.policy))
       rich <- Ref.of[IO, Option[ToolExecResult]](None)
       liveExec: IrExec = () => exec.run().flatMap(r => rich.set(Some(r)).as(r))
       envelope = IrRequest(
@@ -70,7 +74,7 @@ private[gateway] final class IrLlmRoute(
         requestId = requestId
       )
       plan <- IrToolBridge.llmLocally(liveExec)(
-        router.submit(envelope, VfsRoot(os.Path(rootStr, os.pwd)), IrSafety.of(mode))
+        router.submit(envelope, VfsRoot(os.Path(rootStr, os.pwd)), IrSafety.of(mode), Some(policyView))
       )
       leg <- IrLlmContract.legOf(plan) match
         case IrRouteLeg.Executed(base) =>
@@ -120,12 +124,13 @@ private[gateway] object IrLlmRoute:
   def llmIngressEnabled(node: Option[Json]): Boolean =
     node.flatMap(_.hcursor.downField("llmIngress").as[Boolean].toOption).getOrElse(false)
 
-  /** 生产装配：IrGateway 的 llm 限额视图 Router + registry 查表 + 根/档位单点。 */
+  /** 生产装配：IrGateway 的 llm 限额视图 Router + registry 查表 + 根/档位/策略视图单点。 */
   def forGateway(sessionStore: nebflow.core.SessionStore): IrLlmRoute = new IrLlmRoute(
     router = IrGateway.llmInstance,
     lookupIr = IrGateway.lookup,
     rootFor = sid => ExplorerRoots.resolve(sessionStore, sid, None),
-    safetyOf = nebflow.core.GlobalSafety.defaultMode
+    safetyOf = nebflow.core.GlobalSafety.defaultMode,
+    policyViewOf = Some(IrGateway.policyView)
   )
 
 end IrLlmRoute

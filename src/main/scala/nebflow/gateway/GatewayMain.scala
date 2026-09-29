@@ -309,6 +309,16 @@ object GatewayMain extends IOApp:
 
   private def loadExternalTools(): IO[Unit] =
     for
+      // P1-4（ext: 过渡注册）：钩先于首次 reload 设置——boot 与 watcher 热重载共用
+      // ToolLoader.reload() 单入口，ext: 桥的重装载（先摘后挂）在两时点都被覆盖；钩零抛
+      // （IrGateway.reindexExt 兑底 + handleErrorWith 兜底记 ERROR，watcher 线程不死）。
+      _ <- IO(
+        ToolLoader.setReloadHook(configs =>
+          IO(IrGateway.reindexExt(configs)).handleErrorWith(e =>
+            logger.error(s"IR ext reindex hook failed: ${Option(e.getMessage).getOrElse(e.toString)}")
+          )
+        )
+      )
       _ <- ToolLoader.reload()
       _ <- ToolLoader.startFileWatcher().start // background fiber — hot reload on file changes
     yield ()
