@@ -151,10 +151,9 @@ class PluginMcpProtocolSpec extends CatsEffectSuite:
       case Some(p) =>
         assertEquals(p.mcpServers.keySet, Set("good"), "whitespace command must be invalid (single-token rule)")
         val cmd = p.mcpServers("good").command.getOrElse(fail("command missing"))
-        assert(
-          cmd.startsWith(d.toString) && cmd.endsWith("/bin/srv"),
-          s"./bin/srv must resolve to plugin-root-absolute, got: $cmd"
-        )
+        // 平台中立（os.SubPath 在 Windows 渲染为 '\' 分隔）：与装载器
+        // resolvePluginRelative 的产出（dir / SubPath("bin/srv")）全等比对。
+        assertEquals(cmd, (d / "bin" / "srv").toString, s"./bin/srv must resolve to plugin-root-absolute, got: $cmd")
       case None => fail("plugin must load")
     }
   }

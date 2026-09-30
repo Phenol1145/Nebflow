@@ -207,7 +207,27 @@ class PluginManifestProtocolSpec extends CatsEffectSuite:
 
   // ── §4.1 路径围栏（symlink 逃逸）──────────────────────────
 
+  /**
+   * 本机可否创建符号链接（探测一次）：Windows 无开发者模式时
+   * `createSymbolicLink` 需特权（FileSystemException）⇒ 本用例 skip
+   * （DaemonSpec/CardToolWinPathRefSpec 的 assume 先例）；§4.1 围栏臂在
+   * CI ubuntu（ci.yml Test job）全量执行。
+   */
+  private lazy val symlinksAvailable: Boolean =
+    try
+      val probe = os.temp.dir(prefix = "nb-symlink-probe")
+      try
+        os.write.over(probe / "f", "x")
+        os.symlink(probe / "l", probe / "f")
+        true
+      finally os.remove.all(probe)
+    catch case _: Exception => false
+
   test("§4.1: SKILL.md 符号链接逃逸插件根 → 该 skill 跳过；tools.json 逃逸 → tools 扩展忽略") {
+    assume(
+      symlinksAvailable,
+      "symlink creation unavailable on this host (e.g. Windows without developer mode) — §4.1 containment arms run on CI linux"
+    )
     val outside = tempRoot / "outside-staging"
     os.makeDir.all(outside)
     os.write.over(outside / "evil.md", "evil body")

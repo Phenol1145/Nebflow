@@ -124,7 +124,12 @@ class PluginInstallPathGuardSpec extends FunSuite:
       println(s"""[guard-spec] installFrom("$link") [symlink→cwd] → ${res.fold(identity, identity)}""")
       assert(res.isLeft, s"指向 cwd 的符号链接必须被拒，got: $res")
       assert(res.swap.toOption.getOrElse("").contains("current working directory"), s"拒绝文案须为同一条可行动文案，got: $res")
-    catch case _: UnsupportedOperationException => println("[guard-spec] SKIP symlink case (FS unsupported)")
+    // Windows 无开发者模式时 createSymbolicLink 抛 FileSystemException（需特权），
+    // 与 UnsupportedOperationException 同属「本机 FS 不支持建链接」⇒ 同一 SKIP 口径
+    catch
+      case _: UnsupportedOperationException => println("[guard-spec] SKIP symlink case (FS unsupported)")
+      case _: java.nio.file.FileSystemException =>
+        println("[guard-spec] SKIP symlink case (symlink creation not permitted on this host)")
 
   // ── 正控：正常相对路径（cwd 子目录）⇒ 行为不变 ─────────────
   test("正控: 正常相对路径（cwd 子目录）⇒ 照旧安装（行为不变）"):

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mcp-echo-toolkit",
+  "version": "1.0.0",
+  "description": "回显 MCP 工具样例包——节点可经 stdio server 获得 echo 一件回显工具（入参原样回显），用于插件 MCP 链路自检。适用于插件面 MCP 装配链冒烟、mcp.json 结构对照。不适用于真实取数或检索（echo 无外部副作用）；需网页正文请改用 web-search-toolkit 插件。内含 mcp server：echo（单一回显工具，凭据要求=无）。运行前置：宿主 PATH 需有 python3（command=python3 裸名，缺失时分配它的节点响亮失败 PLUGIN_MCP_START_FAILED，不静默）。组件面：仅 mcp.json 一条 stdio entry（args=${PLUGIN_ROOT}/scripts/echo-server.py），无 skills、无工具扩展。",
+  "author": {"name": "Nebflow"}
+}

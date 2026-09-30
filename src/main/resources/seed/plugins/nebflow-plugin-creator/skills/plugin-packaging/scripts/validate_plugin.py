@@ -7,9 +7,12 @@
 #   - canonical schema        PluginRegistry.scala:66   (CanonicalSchema)
 #   - canonical mcp schema    PluginRegistry.scala:70   (CanonicalMcpSchema)
 #   - 保留 env 占位键          PluginRegistry.scala:79   (PluginPlaceholderEnvKeys)
+#   - 保留前缀（装载层口径）     OfficialPackages.scala:51  (ReservedPrefix = "nebflow-")
+#   - 官方允许列表（同源）      OfficialPackages.scala:91+ (allowlist = seed 树现算)
 #   - name 约束 §5.5          PluginRegistry.scala:287-292 (validPluginName)
 #   - digest 算法             PluginRegistry.scala:237-248 (computeDigest)
 #   - server entry 校验        PluginRegistry.scala:639-716 (validateServerEntry)
+#   - tools.json 闭合 schema   PluginRegistry.scala (parseToolsJson，fail-closed)
 #   - shell-like / 凭据红标启发 PluginRegistry.scala:83-89
 # 用法：python3 validate_plugin.py <插件包目录> [--allow <官方插件名>]...
 # 退出码：全部 PASS → 0；任一 FAIL → 1。零第三方依赖（python3 标准库）。
@@ -26,9 +29,11 @@ import sys
 
 CANONICAL_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 CANONICAL_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-RESERVED_PREFIX = "nebflow-plugin-"
-# 官方白名单基线 = creator 自身 + seed manifest 现声明集（运行时会尝试读邻近
-# seed/manifest.json 动态并入 plugins: 声明，见 discover_official）。
+# 保留前缀 = 装载层 OfficialPackages.ReservedPrefix 逐字（全 "nebflow-"，非旧口径
+# "nebflow-plugin-"——种子桥批 2026-09-30 修齐：以更严的装载层为准）。
+RESERVED_PREFIX = "nebflow-"
+# 官方白名单兜底基线（仅当 seed 树与 seed/manifest.json 均不可见时启用，见
+# discover_official——主口径已改为 seed 树目录枚举 = 装载层允许列表同源）。
 OFFICIAL_BASELINE = {"nebflow-plugin-creator", "visual-report", "slideblocks"}
 
 BLACKLIST_RE = re.compile("强大|智能|先进|高效|完善|全面|最好|完美|易用|灵活")
@@ -36,6 +41,10 @@ TRIGGER_RE = re.compile("适用于|使用场景|当.{2,30}时|用于")
 BOUNDARY_RE = re.compile("不适用于|不属于|另配|请改用|勿用于")
 PREDICATE_RE = re.compile("节点(获得|可)")
 SKILLS_DETAIL_RE = re.compile("内含 skills?：")
+# 形态 B（无 skills/、有 mcp.json）专属明细句标记（终审修 2026-09-30：形态 B 已
+# 非实验，明细句给形态 B 口径，M07/M11 不得使 MCP-only 包结构性 dead-end——
+# 装载层裁定 12 是 skills∨mcp，脚本与其同口径）。
+MCP_DETAIL_RE = re.compile("内含 mcp servers?：")
 SKILL_NAME_IN_DESC_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)（")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 NAME_CHARS_RE = re.compile(r"^[a-z0-9.-]+$")
@@ -90,9 +99,32 @@ def compute_digest(pkg):
 
 
 def discover_official(pkg):
-    """M4 官方白名单：基线集 + 就近发现的 seed/manifest.json 声明集 + --allow。"""
+    """M4 官方白名单：装载层允许列表同源（种子桥批 2026-09-30 修齐）。
+
+    主口径 = 就近发现的 seed 树目录枚举（向上找 src/main/resources/seed/plugins
+    或 seed/plugins，列一级子目录）——与 OfficialPackages.allowlist 的「分发内置
+    官方包目录」同一棵树（装载层对树内包逐包现算 digest，此处按目录名/manifest
+    name 判定，二者在种子树内一致）。找不到树时回落旧口径：baseline + 就近
+    seed/manifest.json 声明集（manifest 只列默认预装集，属过窄的近似）。
+    --allow 追加名在 main() 里并入。
+    """
+    d = os.path.abspath(pkg)
+    for _ in range(6):
+        for tree in (
+            os.path.join(d, "src", "main", "resources", "seed", "plugins"),
+            os.path.join(d, "seed", "plugins"),
+        ):
+            if os.path.isdir(tree):
+                names = {n for n in os.listdir(tree)
+                         if os.path.isdir(os.path.join(tree, n))}
+                return names, f"seed tree dirs at {os.path.relpath(tree, os.path.abspath(pkg))}"
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    # fallback：旧口径（baseline ∪ manifest 声明集）
     names = set(OFFICIAL_BASELINE)
-    source = "built-in baseline"
+    source = "built-in baseline (seed tree not found nearby)"
     d = os.path.abspath(pkg)
     for _ in range(6):
         for cand in (
@@ -156,8 +188,25 @@ def actual_skills(pkg):
     return out
 
 
-def desc_skill_names(desc):
-    m = SKILLS_DETAIL_RE.search(desc)
+def actual_mcp_servers(pkg):
+    """mcp.json 的 mcpServers 键（形态 B 明细一致性对照用）；不可读 ⇒ None。"""
+    path = os.path.join(pkg, "mcp.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    servers = data.get("mcpServers")
+    if isinstance(servers, dict):
+        return sorted(servers.keys())
+    return None
+
+
+def desc_detail_names(desc, marker_re):
+    """明细句（…标记…）后至句号段内的名字提取（skills 名 / mcp server 名同机制）。"""
+    m = marker_re.search(desc)
     if not m:
         return []
     segment = desc[m.end():]
@@ -308,11 +357,26 @@ def main():
     record("M06", "定位句（—— + 谓词）", m6_ok,
            f"首句={first_sentence[:60]!r}{'…' if len(first_sentence) > 60 else ''}")
 
-    # M7 明细句：≤400 字符 + 含「内含 skills：」
+    # M7 明细句：≤400 字符；明细标记按形态分叉（终审修 2026-09-30）——
+    #   形态 A/C（有 skills）＝「内含 skills：」（不变）；
+    #   形态 B（无 skills、有 mcp.json）＝「内含 mcp server：」（形态 B 专属口径，
+    #   与装载层裁定 12 的 skills∨mcp 同向，MCP-only 包不再结构性 FAIL）；
+    #   双全无 ⇒ 明细句 FAIL（无组件可明细，装载层亦拒）。
+    actual = actual_skills(pkg)
+    mcp_servers_actual = actual_mcp_servers(pkg)
     m7_len = len(desc) <= MAX_DESC_CHARS
-    m7_detail = SKILLS_DETAIL_RE.search(desc) is not None
-    record("M07", "明细句（≤400 字符 + 内含 skills：）", m7_len and m7_detail,
-           f"长度={len(desc)}/{MAX_DESC_CHARS}，内含 skills：={'有' if m7_detail else '无'}")
+    if actual:
+        m7_marker = SKILLS_DETAIL_RE
+        m7_which = "内含 skills："
+    elif mcp_servers_actual is not None:
+        m7_marker = MCP_DETAIL_RE
+        m7_which = "内含 mcp server："
+    else:
+        m7_marker = None
+        m7_which = "（无 skills/ 且无 mcp.json——无组件可明细）"
+    m7_detail = m7_marker is not None and m7_marker.search(desc) is not None
+    record("M07", "明细句（≤400 字符 + 形态分叉明细标记）", m7_len and m7_detail,
+           f"长度={len(desc)}/{MAX_DESC_CHARS}，{m7_which}={'有' if m7_detail else '无'}")
 
     # M8 触发场景句存在性（核心词全命中是 skill/人审判定项，不在此拦）
     m8 = TRIGGER_RE.search(desc) is not None
@@ -329,13 +393,24 @@ def main():
     record("M10", "空泛词黑名单", not banned,
            "零命中" if not banned else f"命中：{'、'.join(sorted(set(banned)))}")
 
-    # M11 skills 明细一致性
-    actual = actual_skills(pkg)
-    declared = desc_skill_names(desc)
-    m11_ok = bool(actual) and set(declared) == set(actual)
-    record("M11", "skills 明细一致性", m11_ok,
-           f"声明={sorted(declared)} 实际={actual}" if m11_ok else
-           f"不一致——描述声明={sorted(declared)}，skills/ 实际={actual}")
+    # M11 明细一致性（终审修 2026-09-30：随 M7 形态分叉）——
+    #   形态 A/C：描述「内含 skills：」段名字 == skills/ 实际（不变）；
+    #   形态 B：描述「内含 mcp server：」段名字 == mcp.json 的 mcpServers 键
+    #   （mcp.json 不可读 ⇒ 一致性 FAIL——M14 已另记组件违规，明细面不放过）。
+    if actual:
+        declared = desc_detail_names(desc, SKILLS_DETAIL_RE)
+        m11_ok = set(declared) == set(actual)
+        record("M11", "明细一致性（skills）", m11_ok,
+               f"声明={sorted(declared)} 实际={actual}" if m11_ok else
+               f"不一致——描述声明={sorted(declared)}，skills/ 实际={actual}")
+    elif mcp_servers_actual is not None:
+        declared = desc_detail_names(desc, MCP_DETAIL_RE)
+        m11_ok = set(declared) == set(mcp_servers_actual)
+        record("M11", "明细一致性（mcp servers）", m11_ok,
+               f"声明={sorted(declared)} 实际={mcp_servers_actual}" if m11_ok else
+               f"不一致——描述声明={sorted(declared)}，mcpServers 实际={mcp_servers_actual}")
+    else:
+        record("M11", "明细一致性", False, "无 skills/ 且无 mcp.json——无组件可明细（装载层裁定 12 亦拒）")
 
     # M12 + M13 逐 SKILL.md
     skill_files = []

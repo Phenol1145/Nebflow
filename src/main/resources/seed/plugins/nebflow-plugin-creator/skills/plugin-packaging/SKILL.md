@@ -16,7 +16,7 @@ description: 把能力需求封装为合规 Nebflow 插件包的执行手册—�
 2. **终检 PASS → 冻结目录 → 交付后不得再写包内任何文件**。包内字节改动会让面板
    把该包标为「内容已变更」（**可见性提示，不拦截装载**——新内容对新派发即刻生效）。
    交付后确需修改：重跑校验脚本重走终检，并在报告里给出新 digest。
-3. name 命中保留前缀 `nebflow-plugin-` 且不在官方白名单 → 直接换名重生成（见分叉④）。
+3. name 命中保留前缀 `nebflow-` 且不在官方白名单 → 直接换名重生成（见分叉④）。
 
 ## 第一步：判定输入形态（三选一）
 
@@ -47,9 +47,9 @@ description-quality skill 的五段式规范撰写（该 skill 是描述质量�
 场景句（核心词全落字）、内含 skills 明细（与实际目录一致）、边界/分流句、组件
 面声明句。
 
-**保留前缀拦截（生成期）**：manifest name 命中 `nebflow-plugin-` 前缀且不在官方
-白名单（当前官方批次：`nebflow-plugin-creator` 及 seed manifest 声明集）→ 不落盘，
-换名后重生成。这是外部导入渠道拦截在生成侧的对偶防线。
+**保留前缀拦截（生成期）**：manifest name 命中 `nebflow-` 前缀且不在官方白名单
+（白名单源 = 校验脚本运行时就近枚举的分发内置 seed 树包集，与装载层官方允许列表
+同源）→ 不落盘，换名后重生成。这是外部导入渠道拦截在生成侧的对偶防线。
 
 ### 3.2 生成 skill 目录
 
@@ -57,10 +57,11 @@ description-quality skill 的五段式规范撰写（该 skill 是描述质量�
 frontmatter 下限：name（等于目录名）+ description（一句话说清 what 与 when）——
 缺任一键装载器会静默 skip 该 skill。校验脚本 M13 会在落盘前拦住。
 
-### 3.3 生成 mcp.json（实验性）
+### 3.3 生成 mcp.json
 
-输入形态 B 时生成。注意：**此输入形态当前标注为实验性**——装载校验规则完备，但
-磁盘上尚无生产样本，首例产出建议在隔离实例验证 MCP 启动链后再交付。
+输入形态 B 时生成。此形态已有生产样本：官方种子包 `mcp-echo-toolkit`
+（`org.nebflow` 分发内置 seed 树内的 mcp.json 样例——stdio entry + `${PLUGIN_ROOT}`
+args 占位符 + 零第三方依赖 server），产出前可对照其结构。
 
 - `$schema` 必须恰为 canonical mcp schema（模板见校验脚本 M14 的期望值输出）。
 - 逐 entry 自查：`type` ∈ stdio | streamable-http | sse；stdio 必带单一可执行
@@ -71,6 +72,9 @@ frontmatter 下限：name（等于目录名）+ description（一句话说清 wh
 - 凭据类 env 键名与 shell/网络类 command 不拦截但属**红标项**——落盘前自行确认
   其必要性，并在交付报告里主动向用户标出这些风险点。
 - manifest description 须写明 server 能力面与凭据要求，让用户有依据判断里面是什么。
+- 形态 B 的明细句口径：写「内含 mcp server：<server 名>（一句话括注）」，与
+  mcp.json 的 mcpServers 键一致（校验脚本 M07/M11 形态 B 分支；无 skills/ 的包
+  **不写**「内含 skills：」——五段式其余四段同 3.1）。
 
 ## 第四步：落盘（直写 + 同名探测）
 
@@ -148,5 +152,5 @@ PASS 就是最后一道门：**你就是那道人审**。
 ③ 状态：已落盘即生效（在位即生效，无需人工确认）
 ④ 来源：<既有 skill 迁移 / MCP 配置 / 口头描述 + 包从哪来>
 ⑤ 停止手段：面板「更多 → 封禁该插件」/ REST revoke / CLI revoke
-⑥ 红标项（如有）：凭据类 env、shell 类 command、实验性 mcp.json 形态
+⑥ 红标项（如有）：凭据类 env、shell 类 command、mcp.json 形态（server 能力面须在 description 写明）
 ```

@@ -27,7 +27,9 @@ import scala.util.matching.Regex
  *                          name+description（agentskills.io，§7.1 不符 → skip+告警）
  *   mcp.json               可选——{"$schema":<canonical mcp>,"mcpServers":{...}}（§7.2.1
  *                          闭合 schema；server entry type ∈ stdio|streamable-http|sse）
- *   org.nebflow/tools.json 可选——nebflow 扩展命名空间：{"tools":["WebSearch",...]}
+ *   org.nebflow/tools.json 可选——nebflow 扩展命名空间：闭合 schema
+ *                          {"tools":["WebSearch",...]}（种子桥批 2026-09-30 起未知
+ *                          键/坏形态/不可解析 → 拒载，见 [[PluginRegistry.parseToolsJson]]）
  * }}}
  *
  * 装载校验（裁定 12 / §B.8-7）：skills/ 与 mcp.json 至少其一，全无 → 拒载+告警；
@@ -35,6 +37,9 @@ import scala.util.matching.Regex
  * 已知字段类型违规 → 拒载（§5.2/§5.3 fatal）；未知字段/未知目录 → 宽容忽略+告警
  * （§B.8-5 前向兼容）。mcp.json 级违规 → MCP 组件整体 invalid（插件继续装载，
  * §6.2）；单 server entry 违规 → 仅该 entry skip+告警（§7.2.2 隔离边界）。
+ * org.nebflow/tools.json 是 nebflow **自有**扩展命名空间，无官方前向兼容义务 ⇒
+ * 按闭合 schema fail-closed（未知键/"tools" 缺失或非字符串数组/不可解析 → 拒载，
+ * PLUGIN_TOOLS_SCHEMA；官方件 plugin.json/mcp.json 维持 report-and-ignore 不变）。
  * 路径围栏（§4.1）：plugin.json/SKILL.md/tools.json/sse 之外被读路径解析符号链接
  * 后必须仍在插件根内，越界 → 拒绝/跳过。
  *
@@ -678,7 +683,8 @@ object PluginRegistry:
 
       // org.nebflow/tools.json（或 manifest extensions 声明的文件名。声明值语义
       // 按 §B.2/§8：相对 org.nebflow/ 命名空间目录解析为主（扩展目录内容归命名
-      // 空间自有），兼容插件根相对形态；两处均围栏校验（§4.1））
+      // 空间自有），兼容插件根相对形态；两处均围栏校验（§4.1））。
+      // 解析语义（种子桥批 2026-09-30 起闭合 schema fail-closed）见 parseToolsJson。
       toolsPath =
         val declared = c.downField("extensions").downField("org.nebflow/tools").as[String].toOption
         declared match
@@ -707,25 +713,7 @@ object PluginRegistry:
         case Some(p) if !containedUnder(dir, p) =>
           warnings += s"tools.json resolves outside the plugin root — tools extension ignored (§4.1)"
           (Right(Nil): Either[(String, String), List[String]])
-        case Some(p) =>
-          io.circe.parser.parse(os.read(p)) match
-            case Left(err) =>
-              warnings += s"tools.json unparseable (${err.message}) — tools extension ignored"
-              (Right(Nil): Either[(String, String), List[String]])
-            case Right(tjson) =>
-              tjson.hcursor.downField("tools").as[List[String]] match
-                case Right(tools) =>
-                  val illegal = tools.filterNot(BuiltinToolWhitelist.contains)
-                  if illegal.nonEmpty then
-                    Left(
-                      pname ->
-                        (s"org.nebflow/tools requests non-whitelisted tool(s): ${illegal.mkString(", ")}. " +
-                          s"Allowed builtin tools: ${BuiltinToolWhitelist.toList.sorted.mkString(", ")} (§B.6). (PLUGIN_TOOLS_ILLEGAL)")
-                    )
-                  else (Right(tools): Either[(String, String), List[String]])
-                case Left(err) =>
-                  warnings += s"tools.json decode failed (${err.getMessage}) — tools extension ignored"
-                  (Right(Nil): Either[(String, String), List[String]])
+        case Some(p) => parseToolsJson(p, pname)
 
       // 装载校验（裁定 12）：skills 与 mcp 至少其一
       _ <- pass(
@@ -781,6 +769,55 @@ object PluginRegistry:
     )
     end for
   end loadPlugin
+
+  /**
+   * org.nebflow/tools.json 解析（**闭合 schema，fail-closed**——种子桥批 2026-09-30）。
+   *
+   * `org.nebflow/` 是 nebflow **自有**扩展命名空间，没有官方 Agent Plugins 协议的
+   * 前向兼容义务 ⇒ 「未知键拒绝」落位于此（对照：plugin.json / mcp.json 的官方件
+   * 维持 report-and-ignore，绿测 PluginRegistrySpec / PluginMcpProtocolSpec 钉住）：
+   *  - JSON 不可解析 / 顶层非 object / 未知顶层键 / "tools" 缺失或非字符串数组
+   *    ⇒ **整包拒载**（PLUGIN_TOOLS_SCHEMA，与 PLUGIN_TOOLS_ILLEGAL 同族）；
+   *  - 白名单外工具名 ⇒ 整包拒载（PLUGIN_TOOLS_ILLEGAL，既有语义不变）；
+   *  - §4.1 路径逃逸 / extensions 声明的文件不存在 ⇒ warn + 忽略（调用方 toolsPath
+   *    解析段处理，PluginManifestProtocolSpec 钉住的跳过语义，不进本方法）。
+   * 拒载与既有装载错误面同一出口（snapshot warnSync + 缺席注记 + 健康摘要）。
+   */
+  private def parseToolsJson(p: os.Path, pname: String): Either[(String, String), List[String]] =
+    def schemaErr(why: String): (String, String) =
+      pname ->
+        (s"org.nebflow/tools is not the closed schema {\"tools\":[…builtin tool names…]}: $why. " +
+          "This is the nebflow extension namespace (no forward-compat obligation — unknown keys and " +
+          "malformed shapes are refused, unlike the official plugin.json/mcp.json files). Fix the file. " +
+          "(PLUGIN_TOOLS_SCHEMA)")
+    io.circe.parser.parse(os.read(p)) match
+      case Left(err) => Left(schemaErr(s"unparseable (${err.message})"))
+      case Right(tjson) if !tjson.isObject => Left(schemaErr("top level is not a JSON object"))
+      case Right(tjson) =>
+        val obj = tjson.asObject.get
+        val unknown = obj.keys.filterNot(_ == "tools").toList.sorted
+        if unknown.nonEmpty then Left(schemaErr(s"unknown top-level key(s) ${unknown.mkString(", ")}"))
+        else
+          obj("tools") match
+            case None => Left(schemaErr("required key 'tools' is missing"))
+            case Some(t) =>
+              t.as[List[String]] match
+                case Left(err) => Left(schemaErr(s"'tools' is not an array of strings (${err.getMessage})"))
+                case Right(tools) =>
+                  val illegal = tools.filterNot(BuiltinToolWhitelist.contains)
+                  if illegal.nonEmpty then
+                    Left(
+                      pname ->
+                        (s"org.nebflow/tools requests non-whitelisted tool(s): ${illegal.mkString(", ")}. " +
+                          s"Allowed builtin tools: ${BuiltinToolWhitelist.toList.sorted.mkString(", ")} (§B.6). (PLUGIN_TOOLS_ILLEGAL)")
+                    )
+                  else Right(tools)
+
+        end if
+
+    end match
+
+  end parseToolsJson
 
   /**
    * §5.4 string 元数据字段：present 必须是 string（类型违规 = manifest invalid，

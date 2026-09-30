@@ -1,0 +1,7 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "curl-toolkit",
+  "version": "1.0.0",
+  "description": "原始 HTTP 取数工具包——节点可获得 Curl 一件原始 HTTP 请求工具（自定请求头/方法、看响应头与状态行、取任意非 HTML 正文），用于需要 HTTP 协议面细节的取数。适用于调 REST/JSON API、检查响应头与缓存/内容协商行为、下载非 HTML 文件（JSON/CSV/压缩包）、诊断重定向链。不适用于网页正文阅读（HTML 会被原样取回、占上下文，请改用 web-search-toolkit 插件的 WebFetch）；不适用于需要登录态浏览器会话的页面。内含 skill：curl-fetch（Curl 与 WebFetch 的分流纪律、原始 HTTP 取数规范）。组件面：无 mcp.json；工具扩展 = org.nebflow/tools.json 授予 Curl 一件（白名单 ⊆ {WebSearch, WebFetch, Curl}）。",
+  "author": {"name": "Nebflow"}
+}
